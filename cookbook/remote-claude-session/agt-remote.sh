@@ -205,25 +205,25 @@ attach() {
 	require_host
 	bridge=0
 	relay_pid=""
+	relay_dir=""
 	relay_sock=""
 
 	# the status bridge: a relay on this side owns the tab's target and accepts
-	# nothing but a status, so the host never sees the control socket itself
+	# nothing but a status, so the host never sees the control socket itself.
+	# Its socket sits in a fresh private directory per attach, made atomically
+	# under a name nobody can predict: /tmp is shared, so a fixed path there
+	# could be pre-created by another user, and unix socket paths cap near 104
+	# bytes, which rules out $TMPDIR. One socket per attach also means a tab
+	# taking the session over on this same Mac never shares a path with the
+	# relay it replaces.
 	if [ "$STATUS" = 1 ] && [ -n "$socket" ] && [ -n "${AGTERM_SESSION_ID:-}" ]; then
-		if command -v python3 >/dev/null 2>&1; then
-			# a short per-user directory: unix socket paths cap near 104 bytes, and
-			# one socket per attach, so a tab taking the session over on this same
-			# Mac never shares a path with the relay it is replacing
-			relay_dir=/tmp/agt-remote.$(id -u)
-			mkdir -p "$relay_dir"
-			chmod 700 "$relay_dir"
-			for old in "$relay_dir/$name".*.sock; do
-				[ -e "$old" ] || continue
-				pid=${old##*/"$name".}
-				pid=${pid%.sock}
-				kill -0 "$pid" 2>/dev/null || rm -f "$old"
-			done
-			relay_sock=$relay_dir/$name.$$.sock
+		if ! command -v python3 >/dev/null 2>&1; then
+			printf '[%s] no python3 on this Mac; statuses stay idle\n' "$name"
+		elif ! relay_dir=$(mktemp -d /tmp/agt-remote.XXXXXXXX); then
+			relay_dir=""
+			printf '[%s] no private directory for the status relay; statuses stay idle\n' "$name"
+		else
+			relay_sock=$relay_dir/$name.sock
 			python3 "$(dirname "$SELF")/agt-remote-relay.py" --listen "$relay_sock" --agterm "$socket" \
 				--target "$AGTERM_SESSION_ID" --pane "${AGTERM_PANE:-}" --pane-id "${AGTERM_PANE_ID:-}" &
 			relay_pid=$!
@@ -239,8 +239,6 @@ attach() {
 				relay_pid=""
 				printf '[%s] status bridge did not start; the row will stay idle\n' "$name"
 			fi
-		else
-			printf '[%s] no python3 on this Mac; statuses stay idle\n' "$name"
 		fi
 	fi
 
@@ -317,6 +315,7 @@ attach() {
 
 	# exec keeps this pid, so the relay's parent check would never fire: stop it here
 	[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null
+	[ -n "$relay_dir" ] && rm -rf "$relay_dir"
 	rm -f "$STATE_DIR/index/$name"
 	printf '[%s] detached; "%s attach %s %s" reattaches\n' "$name" "$SELF" "$name" "$project"
 	exec "${SHELL:-/bin/sh}" -l
