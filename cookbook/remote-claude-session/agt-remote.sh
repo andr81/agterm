@@ -8,6 +8,9 @@
 #   end [SESSION-ID]      chord: kill the tab's remote tmux session, close the tab
 #   list                  print the host's sessions and projects
 #   install               copy agt-remote-host.sh to the host and prepare it
+#   auth [TOKEN]          store the agent's OAuth token on the host
+#   clone URL [NAME]      clone a repository under the host's projects root
+#   sync                  copy ~/.claude instructions, skills, agents, commands over
 #
 # DESTRUCTIVE: `end` kills the remote tmux session and everything running in
 # it, then closes the local tab. Read the README's Limits.
@@ -297,6 +300,45 @@ install() {
 	remote setup
 }
 
+# the token is read here and travels on stdin, so it never sits in a process
+# list or a shell history on either side
+auth() {
+	require_host
+	token=${1:-}
+	if [ -z "$token" ]; then
+		[ -t 0 ] || fail "auth needs a token as its argument or a terminal to ask on"
+		printf 'paste the token from "claude setup-token": '
+		stty -echo 2>/dev/null
+		IFS= read -r token
+		stty echo 2>/dev/null
+		printf '\n'
+	fi
+	[ -n "$token" ] || fail "no token given"
+	printf '%s\n' "$token" | ssh -o BatchMode=yes "$HOST" "AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN auth"
+}
+
+# -A: the clone authenticates with the keys in this Mac's agent, so the host
+# holds no deploy key of its own
+clone() {
+	require_host
+	url=$1
+	name=${2:-}
+	case $url$name in
+	*"'"*) fail "the URL and name may not contain a single quote" ;;
+	esac
+	ssh -A -o BatchMode=yes "$HOST" "AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN clone '$url' '$name'"
+}
+
+sync_claude() {
+	require_host
+	command -v rsync >/dev/null 2>&1 || fail "rsync is not on PATH"
+	for item in CLAUDE.md skills agents commands; do
+		[ -e "$HOME/.claude/$item" ] || continue
+		rsync -a --delete "$HOME/.claude/$item" "$HOST:.claude/" || fail "rsync of $item failed"
+		echo "synced ~/.claude/$item"
+	done
+}
+
 cmd=${1:-}
 case $cmd in
 open) open ;;
@@ -304,8 +346,11 @@ attach) attach "${2:?name}" "${3:?project}" ;;
 end) end "${2:-}" ;;
 list) require_host && remote list ;;
 install) install ;;
+auth) auth "${2:-}" ;;
+clone) clone "${2:?url}" "${3:-}" ;;
+sync) sync_claude ;;
 *)
-	echo "usage: ${0##*/} open | attach NAME PROJECT | end [SESSION-ID] | list | install" >&2
+	echo "usage: ${0##*/} open | attach NAME PROJECT | end [SESSION-ID] | list | install | auth [TOKEN] | clone URL [NAME] | sync" >&2
 	exit 2
 	;;
 esac

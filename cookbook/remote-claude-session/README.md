@@ -19,8 +19,8 @@ Conversations survive more than the connection. The Claude Code session id is pi
 
 - agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore` and `session status --pane-id` the recipe rides on are all older than that.
 - `jq` and `ssh` on the Mac.
-- On the host: `tmux`, `python3`, `uuidgen` (util-linux), and Claude Code installed and already signed in. The recipe starts `claude`; it does not install or authenticate it.
-- Key-based ssh to the host that works without a prompt, from a process with no terminal: a key held by the macOS agent, or one without a passphrase.
+- On the host: `tmux`, `python3`, `uuidgen` (util-linux), `git`, and the Claude Code binary on the login shell's `PATH`. The recipe does not install it; it does carry your sign-in over, see Setup.
+- Key-based ssh to the host that works without a prompt, from a process with no terminal: a key held by the macOS agent, or one without a passphrase. `rsync` on both sides for the optional `sync`.
 
 ## Setup
 
@@ -46,12 +46,15 @@ AGT_REMOTE_BADGE='⇅ '                  # the sidebar prefix; set it empty to k
 
 A config file rather than variables on the keymap line, because two of the script's callers never see the keymap's environment: the tab's own process, and the line agterm replays after a restart.
 
-Give the host an entry in `~/.ssh/config`. The first two lines are what make the picker instant and let every tab share one connection; the last two are what turns a dead connection into a reconnect within a minute instead of a frozen tab:
+Give the host an entry in `~/.ssh/config`. The `Control*` lines are what make the picker instant and let every tab share one connection; the `ServerAlive*` pair turns a dead connection into a reconnect within a minute instead of a frozen tab; `ForwardAgent` is what lets `git` on the host use this Mac's keys, so the host never holds one of its own:
 
 ```
 Host devbox
   HostName 203.0.113.10
   User ubuntu
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  ForwardAgent yes
   ControlMaster auto
   ControlPath ~/.ssh/cm-%C
   ControlPersist 10m
@@ -70,23 +73,40 @@ Any chord with a modifier works; a leader pair is shown because the two commands
 
 ### On the host
 
-Run once from the Mac:
+Everything on the host is done from the Mac, in four commands. Each is safe to run again.
+
+**1. Install.**
 
 ```sh
 ~/bin/agt-remote.sh install
 ```
 
-It copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), creates the projects root, and appends three lines to the host's `~/.tmux.conf` that let the agent's clipboard and notification escapes pass through tmux.
+Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), and runs the host script's `setup`, which: creates the projects root; appends to `~/.tmux.conf` the lines that let the agent's clipboard and notification escapes through and pin `SSH_AUTH_SOCK` to a fixed path; writes `~/.ssh/rc` to repoint that path at the forwarded agent on every login, so `git` keeps working inside tmux after a reattach; makes `~/.profile` source `~/.agt-remote/env`; adds the github and gitlab host keys to `known_hosts`; and merges the four status hooks into `~/.claude/settings.json`, keeping whatever hooks are already there and backing the file up first. Those four events match what agterm's own **Install Agent Status Hooks…** wires up locally; `agt-remote-host.sh hooks` prints the block if you would rather merge it by hand.
 
-Then, on the host, put the status hooks into `~/.claude/settings.json`. The host script prints the block with its own absolute path filled in:
+**2. Sign in.** Claude Code on the host needs your subscription. On the Mac, `claude setup-token` opens the browser and prints a long-lived token; hand it over:
 
 ```sh
-~/.local/bin/agt-remote-host.sh hooks
+~/bin/agt-remote.sh auth
 ```
 
-Merge it with any hooks already there; the four events match what agterm's own **Install Agent Status Hooks…** wires up locally. Without this step everything else works and the row simply stays idle.
+It asks for the token without echoing it and stores it on the host in `~/.agt-remote/env` as `CLAUDE_CODE_OAUTH_TOKEN`, mode 600, which every session's login shell sources. Run it again to replace the token. Signing in on the host interactively instead, with `claude` and `/login`, works the same way and needs no token.
 
-Clone the projects under the root you named. Every direct subdirectory of it is one picker row.
+**3. Clone.** Every direct subdirectory of the projects root is one picker row:
+
+```sh
+~/bin/agt-remote.sh clone git@github.com:you/api.git
+~/bin/agt-remote.sh clone git@gitlab.com:group/backend.git api-backend
+```
+
+The clone runs on the host with your Mac's ssh agent forwarded, so any key the agent holds works there; `ssh-add -l` shows what it holds, and `ssh-add --apple-use-keychain ~/.ssh/<key>` loads one. The second argument names the directory when the repository's own name is not the project's.
+
+**4. Sync, optionally.**
+
+```sh
+~/bin/agt-remote.sh sync
+```
+
+Copies `~/.claude/CLAUDE.md`, `skills/`, `agents/` and `commands/`, whichever exist, to the host's `~/.claude/`, so the agent there follows the same instructions. Nothing else from `~/.claude` travels: `settings.json` carries this Mac's hooks and paths, and plugins are installed per machine.
 
 ## Usage
 
@@ -98,7 +118,7 @@ Close the laptop, open it later: the tab prints that it lost the connection and 
 
 Press ⌃⇧N then X in a remote tab to end it. The picker opens on "Leave running"; choose the kill row to stop the tmux session and close the tab. A plain ⌘W closes the tab and leaves the session running on the host.
 
-From any shell, `~/bin/agt-remote.sh list` prints the host's sessions and projects, and `~/bin/agt-remote.sh attach NAME PROJECT` reattaches by hand.
+From any shell, `~/bin/agt-remote.sh list` prints the host's sessions and projects, `~/bin/agt-remote.sh attach NAME PROJECT` reattaches by hand, and `clone` adds a project without leaving the Mac.
 
 ## How it works
 
@@ -135,3 +155,7 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 **Chords inside a scratch terminal or overlay can resolve to the wrong session.** `end` takes the session the chord fired in; from a scratch pane that may be a different tab than the one on screen. The picker names the session it is about to kill, so read the row.
 
 **`AGT_REMOTE_COMMAND` and `AGT_REMOTE_PROJECTS` may not contain a single quote**, because both are spliced into a single-quoted word on the remote command line; the script refuses at startup rather than mangling them.
+
+**`install` edits files on the host.** `~/.tmux.conf`, `~/.ssh/rc`, `~/.profile`, `~/.ssh/known_hosts` and `~/.claude/settings.json` each gain a marked block or entry, once; a `~/.ssh/rc` that already exists also stops sshd's default X11 handling, which a headless host does not miss. `sync` runs `rsync --delete` on the four items it copies, so a skill that exists only on the host is removed by the next sync.
+
+**The token in `~/.agt-remote/env` is your subscription.** It is a file on the host, readable by your user there; treat host access as account access, and rotate it with `auth` if the host is ever shared or lost.
