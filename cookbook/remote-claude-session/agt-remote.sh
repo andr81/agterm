@@ -211,9 +211,19 @@ attach() {
 	# nothing but a status, so the host never sees the control socket itself
 	if [ "$STATUS" = 1 ] && [ -n "$socket" ] && [ -n "${AGTERM_SESSION_ID:-}" ]; then
 		if command -v python3 >/dev/null 2>&1; then
-			mkdir -p "$STATE_DIR/relay"
-			chmod 700 "$STATE_DIR/relay"
-			relay_sock=$STATE_DIR/relay/$name.sock
+			# a short per-user directory: unix socket paths cap near 104 bytes, and
+			# one socket per attach, so a tab taking the session over on this same
+			# Mac never shares a path with the relay it is replacing
+			relay_dir=/tmp/agt-remote.$(id -u)
+			mkdir -p "$relay_dir"
+			chmod 700 "$relay_dir"
+			for old in "$relay_dir/$name".*.sock; do
+				[ -e "$old" ] || continue
+				pid=${old##*/"$name".}
+				pid=${pid%.sock}
+				kill -0 "$pid" 2>/dev/null || rm -f "$old"
+			done
+			relay_sock=$relay_dir/$name.$$.sock
 			python3 "$(dirname "$SELF")/agt-remote-relay.py" --listen "$relay_sock" --agterm "$socket" \
 				--target "$AGTERM_SESSION_ID" --pane "${AGTERM_PANE:-}" --pane-id "${AGTERM_PANE_ID:-}" &
 			relay_pid=$!

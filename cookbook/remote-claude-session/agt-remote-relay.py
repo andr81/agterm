@@ -98,6 +98,7 @@ def main():
         os.umask(old)
     srv.listen(8)
     srv.settimeout(5)
+    own_inode = os.stat(opts.listen).st_ino
     try:
         while os.getppid() == parent:
             try:
@@ -108,8 +109,10 @@ def main():
                 serve(conn, opts)
     finally:
         srv.close()
+        # only this relay's own socket: a newer relay may have taken the path
         try:
-            os.unlink(opts.listen)
+            if os.stat(opts.listen).st_ino == own_inode:
+                os.unlink(opts.listen)
         except OSError:
             pass
     return 0
