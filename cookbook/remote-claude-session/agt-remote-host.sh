@@ -47,7 +47,13 @@ attach() {
 	infocmp "${TERM:-}" >/dev/null 2>&1 || export TERM=xterm-256color
 
 	if ! tmux has-session -t "=$name" 2>/dev/null; then
-		tmux new-session -d -s "$name" -c "$dir" || exit 1
+		# the token `auth` stored goes into the session's own environment, so it
+		# does not depend on which startup file the login shell happens to read
+		local -a env_args=()
+		local tok
+		tok=$(sed -n "s/^export CLAUDE_CODE_OAUTH_TOKEN='\([A-Za-z0-9_-]*\)'$/\1/p" "$STATE/env" 2>/dev/null)
+		[[ -n $tok ]] && env_args=(-e "CLAUDE_CODE_OAUTH_TOKEN=$tok")
+		tmux new-session -d -s "$name" -c "$dir" ${env_args[@]+"${env_args[@]}"} || exit 1
 		# the agent's conversation id is pinned to the session name, so a host
 		# reboot brings back the same conversation rather than a new one
 		local idfile=$STATE/$name.claude id
@@ -175,12 +181,15 @@ setup() {
 
 # adds the four status hooks to ~/.claude/settings.json, keeping everything
 # already there. A file that is not a JSON object is left untouched and
-# reported; a file that needs no change is not rewritten and not backed up.
+# reported; a file that needs no change is not rewritten and not backed up;
+# a symlinked file is rewritten at its target, so the link survives.
 merge_hooks() {
 	local settings=$HOME/.claude/settings.json
 	python3 - "$settings" "$SELF" <<-'EOF'
 		import json, os, shutil, sys, time
-		path, me = sys.argv[1], sys.argv[2]
+		me = sys.argv[2]
+		# through any symlink: a dotfiles-managed settings.json keeps its link
+		path = os.path.realpath(sys.argv[1])
 		data, mode = {}, 0o600
 		if os.path.exists(path):
 		    mode = os.stat(path).st_mode & 0o777

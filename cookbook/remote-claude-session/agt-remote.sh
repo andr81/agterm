@@ -72,10 +72,11 @@ canonical_id() {
 		grep -Ex '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}'
 }
 
-# the status bridge's port: derived from the name so every reattach of a session
-# forwards the same port, and the hooks on the host keep a target that stays true
-port_for() {
-	printf '%s' "$1" | cksum | awk '{ print 20000 + ($1 % 20000) }'
+# the status bridge's port on the host: a fresh one per connection, because a
+# reattach that takes a session over from another tab would otherwise ask for
+# the port that tab still holds. The host learns it from the attach line.
+random_port() {
+	printf '%d\n' $((20000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 20000))
 }
 
 # the host script reads the projects root from its environment, and ssh forwards
@@ -202,7 +203,7 @@ attach() {
 		exec "${SHELL:-/bin/sh}" -l
 	}
 	require_host
-	port=""
+	bridge=0
 	relay_pid=""
 	relay_sock=""
 
@@ -222,7 +223,7 @@ attach() {
 				i=$((i + 1))
 			done
 			if [ -S "$relay_sock" ]; then
-				port=$(port_for "$name")
+				bridge=1
 			else
 				kill "$relay_pid" 2>/dev/null
 				relay_pid=""
@@ -237,15 +238,18 @@ attach() {
 	stop=0
 	trap 'stop=1' INT
 
-	# ssh joins its arguments with spaces into one remote line, so an empty one
-	# would vanish and shift the rest; every word is quoted for the remote shell
-	line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '$port' '$COMMAND'"
-
 	while [ "$stop" -eq 0 ]; do
-		if [ -n "$port" ]; then
-			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+		# ssh joins its arguments with spaces into one remote line, so an empty one
+		# would vanish and shift the rest; every word is quoted for the remote shell
+		if [ "$bridge" -eq 1 ]; then
+			port=$(random_port)
+			line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '$port' '$COMMAND'"
+			# a forward that cannot bind must fail the connection (exit 255, retried
+			# below with another port) rather than run the attach with no bridge
+			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes \
 				-R "127.0.0.1:$port:$relay_sock" "$HOST" "$line"
 		else
+			line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '' '$COMMAND'"
 			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$HOST" "$line"
 		fi
 		rc=$?
