@@ -238,45 +238,58 @@ attach() {
 	stop=0
 	trap 'stop=1' INT
 
-	quick_fails=0
 	while [ "$stop" -eq 0 ]; do
-		started=$(date +%s)
+		# the forward is established on its own first: a short connection that
+		# asks for the same -R and nothing else proves the host accepts it and the
+		# port is free, before any attach runs. Three ports refused while a plain
+		# connection works is the host refusing -R, and the session then opens
+		# without its bridge rather than never. Its own connection, not the
+		# shared master, so the probe's forward goes away with it.
+		port=""
+		if [ "$bridge" -eq 1 ]; then
+			tries=0
+			while [ -z "$port" ] && [ "$tries" -lt 3 ]; do
+				candidate=$(random_port)
+				if ssh -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -o ExitOnForwardFailure=yes \
+					-R "127.0.0.1:$candidate:$relay_sock" "$HOST" true 2>/dev/null; then
+					port=$candidate
+				else
+					tries=$((tries + 1))
+				fi
+			done
+			if [ -z "$port" ]; then
+				if ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true 2>/dev/null; then
+					bridge=0
+					[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null
+					relay_pid=""
+					printf '\n[%s] the host refused the status forward; continuing without statuses\n' "$name"
+				else
+					printf '\n[%s] host unreachable, retrying in %ss (Ctrl-C for a local shell)\n' "$name" "$RETRY"
+					i=0
+					while [ "$i" -lt "$RETRY" ] && [ "$stop" -eq 0 ]; do
+						sleep 1
+						i=$((i + 1))
+					done
+				fi
+				continue
+			fi
+		fi
+
 		# ssh joins its arguments with spaces into one remote line, so an empty one
 		# would vanish and shift the rest; every word is quoted for the remote shell
-		if [ "$bridge" -eq 1 ]; then
-			port=$(random_port)
-			line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '$port' '$COMMAND'"
-			# a forward that cannot bind must fail the connection (exit 255, retried
-			# below with another port) rather than run the attach with no bridge
+		line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '$port' '$COMMAND'"
+		if [ -n "$port" ]; then
 			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes \
 				-R "127.0.0.1:$port:$relay_sock" "$HOST" "$line"
 		else
-			line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '' '$COMMAND'"
 			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$HOST" "$line"
 		fi
 		rc=$?
 		case $rc in
 		0) break ;;
 		255)
-			# an exit within seconds never reached the attach: a port that could not
-			# bind, a host that refuses -R, or no network. A connection that lived
-			# longer was a drop, and drops keep their bridge. Three quick failures
-			# in a row with a plain connection working is the host refusing -R, and
-			# the session then opens without its bridge rather than never.
-			if [ $(($(date +%s) - started)) -lt 10 ]; then
-				quick_fails=$((quick_fails + 1))
-			else
-				quick_fails=0
-			fi
-			if [ "$bridge" -eq 1 ] && [ "$quick_fails" -ge 3 ] &&
-				ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true 2>/dev/null; then
-				bridge=0
-				[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null
-				relay_pid=""
-				printf '\n[%s] the host refused the status forward; continuing without statuses\n' "$name"
-				continue
-			fi
-			# a dropped connection: the tmux session is still there, so come back
+			# a dropped connection, or the rare port taken between probe and attach:
+			# the tmux session is still there, so come back, probing afresh
 			printf '\n[%s] connection lost, reconnecting in %ss (Ctrl-C for a local shell)\n' "$name" "$RETRY"
 			i=0
 			while [ "$i" -lt "$RETRY" ] && [ "$stop" -eq 0 ]; do
