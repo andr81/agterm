@@ -256,6 +256,16 @@ attach() {
 		case $rc in
 		0) break ;;
 		255)
+			# a host that refuses remote forwarding fails every -R the same way a
+			# dead network does; a plain connection tells the two apart, and the
+			# session then opens without its bridge rather than never
+			if [ "$bridge" -eq 1 ] && ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true 2>/dev/null; then
+				bridge=0
+				[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null
+				relay_pid=""
+				printf '\n[%s] the host refused the status forward; continuing without statuses\n' "$name"
+				continue
+			fi
 			# a dropped connection: the tmux session is still there, so come back
 			printf '\n[%s] connection lost, reconnecting in %ss (Ctrl-C for a local shell)\n' "$name" "$RETRY"
 			i=0

@@ -30,6 +30,7 @@ attach() {
 	local name=$1 project=$2 port=${3:-} cmd=${4:-claude}
 	valid_name "$name" || { echo "bad session name: $name" >&2; exit 2; }
 	valid_project "$project" || { echo "bad project name: $project" >&2; exit 2; }
+	[[ $cmd != *"'"* ]] || { echo "the command may not contain a single quote" >&2; exit 2; }
 	local dir=$PROJECTS/$project
 	[[ -d $dir ]] || { echo "no such project on $(hostname): $dir" >&2; exit 2; }
 
@@ -47,13 +48,7 @@ attach() {
 	infocmp "${TERM:-}" >/dev/null 2>&1 || export TERM=xterm-256color
 
 	if ! tmux has-session -t "=$name" 2>/dev/null; then
-		# the token `auth` stored goes into the session's own environment, so it
-		# does not depend on which startup file the login shell happens to read
-		local -a env_args=()
-		local tok
-		tok=$(sed -n "s/^export CLAUDE_CODE_OAUTH_TOKEN='\([A-Za-z0-9_-]*\)'$/\1/p" "$STATE/env" 2>/dev/null)
-		[[ -n $tok ]] && env_args=(-e "CLAUDE_CODE_OAUTH_TOKEN=$tok")
-		tmux new-session -d -s "$name" -c "$dir" ${env_args[@]+"${env_args[@]}"} || exit 1
+		tmux new-session -d -s "$name" -c "$dir" || exit 1
 		# the agent's conversation id is pinned to the session name, so a host
 		# reboot brings back the same conversation rather than a new one
 		local idfile=$STATE/$name.claude id
@@ -63,12 +58,13 @@ attach() {
 			id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 			printf '%s\n' "$id" >"$idfile"
 		fi
-		local transcripts=("$HOME"/.claude/projects/*/"$id".jsonl)
-		if [[ -f ${transcripts[0]} ]]; then
-			tmux send-keys -t "=$name" "$cmd --resume $id" Enter
-		else
-			tmux send-keys -t "=$name" "$cmd --session-id $id" Enter
-		fi
+		local transcripts=("$HOME"/.claude/projects/*/"$id".jsonl) flag=--session-id
+		[[ -f ${transcripts[0]} ]] && flag=--resume
+		# the token `auth` stored is read by a wrapper inside the session, so it
+		# never appears on a command line and does not depend on which startup
+		# file the login shell reads; `sh` keeps this the same under any shell
+		tmux send-keys -t "=$name" \
+			"sh -c '. \"\$HOME/.agt-remote/env\" 2>/dev/null; exec $cmd $flag $id'" Enter
 	fi
 	# -d: the last client wins, so a tab forgotten elsewhere cannot shrink this one
 	exec tmux attach-session -d -t "=$name"
