@@ -238,7 +238,9 @@ attach() {
 	stop=0
 	trap 'stop=1' INT
 
+	quick_fails=0
 	while [ "$stop" -eq 0 ]; do
+		started=$(date +%s)
 		# ssh joins its arguments with spaces into one remote line, so an empty one
 		# would vanish and shift the rest; every word is quoted for the remote shell
 		if [ "$bridge" -eq 1 ]; then
@@ -256,10 +258,18 @@ attach() {
 		case $rc in
 		0) break ;;
 		255)
-			# a host that refuses remote forwarding fails every -R the same way a
-			# dead network does; a plain connection tells the two apart, and the
-			# session then opens without its bridge rather than never
-			if [ "$bridge" -eq 1 ] && ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true 2>/dev/null; then
+			# an exit within seconds never reached the attach: a port that could not
+			# bind, a host that refuses -R, or no network. A connection that lived
+			# longer was a drop, and drops keep their bridge. Three quick failures
+			# in a row with a plain connection working is the host refusing -R, and
+			# the session then opens without its bridge rather than never.
+			if [ $(($(date +%s) - started)) -lt 10 ]; then
+				quick_fails=$((quick_fails + 1))
+			else
+				quick_fails=0
+			fi
+			if [ "$bridge" -eq 1 ] && [ "$quick_fails" -ge 3 ] &&
+				ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true 2>/dev/null; then
 				bridge=0
 				[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null
 				relay_pid=""

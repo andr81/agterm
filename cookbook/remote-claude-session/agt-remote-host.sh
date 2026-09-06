@@ -30,7 +30,7 @@ attach() {
 	local name=$1 project=$2 port=${3:-} cmd=${4:-claude}
 	valid_name "$name" || { echo "bad session name: $name" >&2; exit 2; }
 	valid_project "$project" || { echo "bad project name: $project" >&2; exit 2; }
-	[[ $cmd != *"'"* ]] || { echo "the command may not contain a single quote" >&2; exit 2; }
+	[[ $cmd$STATE != *"'"* ]] || { echo "the command and state path may not contain a single quote" >&2; exit 2; }
 	local dir=$PROJECTS/$project
 	[[ -d $dir ]] || { echo "no such project on $(hostname): $dir" >&2; exit 2; }
 
@@ -62,9 +62,10 @@ attach() {
 		[[ -f ${transcripts[0]} ]] && flag=--resume
 		# the token `auth` stored is read by a wrapper inside the session, so it
 		# never appears on a command line and does not depend on which startup
-		# file the login shell reads; `sh` keeps this the same under any shell
+		# file the login shell reads; `sh` keeps this the same under any shell.
+		# The file is optional: a host signed in interactively has none.
 		tmux send-keys -t "=$name" \
-			"sh -c '. \"\$HOME/.agt-remote/env\" 2>/dev/null; exec $cmd $flag $id'" Enter
+			"sh -c '[ -f \"$STATE/env\" ] && . \"$STATE/env\"; exec $cmd $flag $id'" Enter
 	fi
 	# -d: the last client wins, so a tab forgotten elsewhere cannot shrink this one
 	exec tmux attach-session -d -t "=$name"
