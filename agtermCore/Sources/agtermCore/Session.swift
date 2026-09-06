@@ -343,9 +343,13 @@ public final class Session: Identifiable {
 
     /// The target identity's current role, nil for session-wide placement or a destroyed target.
     public var hudTargetPane: OverlayPane? {
-        guard let hudPaneIdentity else { return nil }
-        if paneIdentity == hudPaneIdentity { return .left }
-        if splitPaneIdentity == hudPaneIdentity { return .right }
+        hudPaneIdentity.flatMap(paneRole(forIdentity:))
+    }
+
+    /// paneRole resolves a captured pane identity to its current role, following a promotion.
+    public func paneRole(forIdentity identity: UUID) -> OverlayPane? {
+        if paneIdentity == identity { return .left }
+        if splitPaneIdentity == identity { return .right }
         return nil
     }
 

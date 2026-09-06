@@ -33,10 +33,18 @@ extension AppActions {
         DashboardControllerRegistry.shared.controller(for: library.activeWindowID)?.isOpen == true
     }
 
-    /// Whether the specified window has a native control picker pending. Kept as one window-scoped
+    /// Whether the specified window has a control picker or ask pending. Kept as one window-scoped
     /// predicate so both frontmost and session-addressed focus paths use the same modal invariant.
     func pickActive(for windowID: WindowInfo.ID?) -> Bool {
-        PickRegistry.shared.controller(for: windowID)?.pending != nil
+        PickRegistry.shared.controller(for: windowID)?.modalPending == true
+    }
+
+    @discardableResult
+    func escapePendingAsk(for windowID: WindowInfo.ID?) -> Bool {
+        guard let controller = PickRegistry.shared.controller(for: windowID),
+              controller.pendingAsk != nil else { return false }
+        controller.escapeAsk()
+        return true
     }
 
     /// Whether terminal zoom is active in the window OWNING this session — the right gate for the

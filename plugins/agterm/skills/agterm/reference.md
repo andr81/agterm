@@ -248,13 +248,14 @@ as both), `dashboardHighlighted` (the highlighted cell's pane ref — the one En
 that exact pane), `dashboardFontSize` (the absolute font size in points applied to the cells, omitted when
 the mode is `untouched`), and `dashboardFontMode` (`auto` for `--auto-size`, `fixed` for `--font-size`, or
 `untouched`), plus `pickPending` (the id of the native picker currently awaiting an answer in this
-window, omitted when none is pending), and `app` (which agterm is serving this socket: `version`, plus
+window, omitted when none is pending), `askPending` (the pending question's id, also omitted when absent),
+and `app` (which agterm is serving this socket: `version`, plus
 `commit` when the build recorded one — the same value `agtermctl version` returns, so an agent already
 reading the tree gets its version floor without a second round-trip; it is not duplicated onto
 `window.list`, where a caller uses `version` instead). `idleMs` is live
 and grows while the window is idle, so it is on `tree` only, never `window.list`; `sidebarVisible` is on
 both; `sidebarMode`, `sidebarWidth`, `workspaceFilter`, `quickVisible`, `zoomedSurface`, the four
-`dashboard*` fields, and `pickPending`
+`dashboard*` fields, `pickPending`, and `askPending`
 are `tree`-only (a GUI/keyboard change would leave a cached copy stale). All of those are read-only
 projections of live GUI state. `app` is the one CONSTANT among them, and is absent from `window.list`
 for a different reason: it describes the serving app rather than a window, so repeating it on every row
@@ -999,8 +1000,9 @@ by match score and so does not preserve the supplied order; the seeded text open
 keystroke replaces it rather than appending. `--allow-custom` adds a row for a nonmatching
 query and returns it as a custom result; with an empty item list that row is the only possible one, and it
 appears as soon as the query is nonblank, prefilled or typed; whitespace and newlines are trimmed first.
-A background `--window` target is not raised by default; `--follow` raises it. Only one picker can be
-pending in a window, and a second open fails with `pick already pending`.
+A background `--window` target is not raised by default; `--follow` raises it. Only one pick or ask can be
+pending in a window, and a second open fails with `pick already pending`, or `ask already pending` when a
+dialog owns the slot.
 
 The default call polls until the user answers and prints one bare JSON result:
 
@@ -1028,6 +1030,67 @@ whose next poll races process shutdown may observe a transport failure instead o
 A terminal result stays readable by its own id after the next picker opens in that window, and after the
 window closes — including permanent window deletion — so a blocking caller always reads back the answer
 it waited for. Results age out oldest-first: the 8 most recent per open window, and 32 across closed ones.
+
+## ask
+
+`agtermctl ask [open] TITLE --button ID=LABEL [--button ...] [--message TEXT]` opens a themed,
+window-modal question. It takes no stdin. Only one pick or ask can be pending in a window.
+Use explicit `ask open` when the title is `open`, `result`, or `cancel`.
+
+Supply one to six buttons with unique ids and nonempty labels. A token without `=` is both id and
+label; otherwise only the first `=` separates them. The title must be nonblank, and title, message,
+and labels cannot contain control characters.
+
+`--default ID` names the initially highlighted button. Otherwise the first non-destructive button is
+highlighted, or the first button if it is the only choice. Exactly one button is active. Tab/Right/Down
+move forward; Shift-Tab/Left/Up move back; navigation wraps. Return chooses the highlight. Repeat `--hotkey ID=LETTER` for letter shortcuts,
+unique case-insensitively. Command, Control, and Option combinations do not trigger them.
+`--destructive ID` adds the destructive marker; it cannot name the default button.
+Outside clicks leave the dialog open.
+
+`--style terminal|gui` defaults to `terminal`. Terminal style uses monospace text and the theme's
+background and foreground. Both styles fit their content, capped at 90 percent of the anchor width and
+72 cells; labels wrap and buttons fall back to a column. Buttons have padded labels and a
+dim foreground fill; the active button uses solid foreground fill and background-colored text. GUI style uses the picker's material,
+corner radius, and light/dark appearance, system fonts, a headline title, and a secondary-colored message.
+Native push buttons sit in a row, with a prominent accent-colored highlight and a red-tinted
+destructive button that becomes prominent red when highlighted; colors follow the system appearance. Both styles share keyboard behavior, hotkeys,
+results, anchoring, and modality. Style has no read-back; an invalid value returns `unknown style`.
+`--align left|center|right` defaults to `right` and aligns the entire button block in either style,
+including its vertical fallback. It has no read-back; invalid values return `unknown align`.
+`--width N` replaces automatic sizing with a fixed integer percentage of the anchor width, 10...100,
+for either style. It has no read-back; invalid values return `width must be 10 to 100`.
+
+Omit `--target` to center over the terminal area, excluding the sidebar, or name a session to center over
+its whole area. A target must be
+selected in its owning window. `--pane left|right` narrows the anchor and requires `--target`;
+`--pane-id TOKEN` resolves a live pane token first, using `--pane` as fallback. A hidden pane or
+session is rejected, as is an anchored open under zoom or dashboard. `--window W` selects the window;
+`--follow` raises it. Resize and pane-role changes preserve the captured identity. Closing or
+deselecting the session, or removing or hiding the anchored pane, returns `cancelled`.
+Session-wide placement and a pane that stays visible survive split collapse.
+
+The blocking call prints one bare result:
+
+```json
+{"result":"answered","id":"yes","label":"Yes","index":0}
+{"result":"escaped"}
+{"result":"cancelled"}
+```
+
+Index is the caller's button order. An answer exits 0, including a named No button, so check `id`
+before acting. Esc and Command-W return `escaped` with exit 3. `ask.cancel`, window teardown,
+app termination, and anchor loss return `cancelled` with exit 2. Failure exits 1.
+
+`--no-block` prints `{"id":"<ask-id>"}`. `agtermctl ask result ID [--window W]` prints the current
+or terminal result, including `{"result":"pending"}` with exit 1. `agtermctl ask cancel ID [--window W]`
+returns `ok` on success and cancels only a pending dialog; an already-resolved id is a successful no-op.
+Both use the exact global id, independent of the frontmost window; an explicit window must match.
+
+Tree exposes top-level `askPending` while waiting and omits it after resolution. The raw `ask.open`
+response also echoes `result.pane` for pane placement. Results retain the latest eight per open
+window and 32 across closed windows, separately from pick. Window closure cancels a pending ask;
+app shutdown can end polling with a transport failure. Ask emits no events.
 
 ## quick
 

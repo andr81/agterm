@@ -509,6 +509,8 @@ final class ControlServer {
             return setDebugAppearance(args: request.args)
         case .pickOpen, .pickResult, .pickCancel:
             preconditionFailure("pick command returned nil from ControlDispatcher")
+        case .askOpen, .askResult, .askCancel:
+            preconditionFailure("ask command returned nil from ControlDispatcher")
         case .sessionHudOpen, .sessionHudUpdate, .sessionHudClose:
             preconditionFailure("hud command returned nil from ControlDispatcher")
         }
@@ -643,8 +645,8 @@ final class ControlServer {
                 controller.close()
                 return ControlResponse(ok: true)
             }
-            if PickRegistry.shared.controller(for: windowID)?.pending != nil {
-                return ControlResponse(ok: false, error: "pick pending")
+            if let error = PickRegistry.shared.controller(for: windowID)?.pendingModalError {
+                return ControlResponse(ok: false, error: error)
             }
             var resolvedTargets: [ResolvedDashboardTarget] = []
             var unresolved: [String] = []
@@ -745,6 +747,7 @@ final class ControlServer {
             // resolved through the projected window's registry entry on every tree build, and tree-only:
             // window.list is cache-backed, so mirroring a GUI-resolved pick there would go stale.
             pickPending: { windowID.flatMap { PickRegistry.shared.controller(for: $0)?.pending?.id } },
+            askPending: { windowID.flatMap { PickRegistry.shared.controller(for: $0)?.pendingAsk?.id } },
             dashboardMembers: {
                 guard let dashboard, dashboard.isOpen else { return nil }
                 return dashboard.members.map(\.controlRef)
