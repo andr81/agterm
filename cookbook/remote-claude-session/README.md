@@ -18,7 +18,7 @@ Conversations survive more than the connection. The Claude Code session id is pi
 ## Requirements
 
 - agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore` and `session status --pane-id` the recipe rides on are all older than that.
-- `jq` and `ssh` on the Mac.
+- `jq`, `ssh` and `python3` on the Mac. Python runs the status relay; without it the tab still works and the row stays idle.
 - On the host: `tmux`, `python3`, `uuidgen` (util-linux), `git`, and the Claude Code binary on the login shell's `PATH`. The recipe does not install it; it does carry your sign-in over, see Setup.
 - Key-based ssh to the host that works without a prompt, from a process with no terminal: a key held by the macOS agent, or one without a passphrase. `rsync` on both sides for the optional `sync`.
 
@@ -26,12 +26,12 @@ Conversations survive more than the connection. The Claude Code session id is pi
 
 ### On your Mac
 
-Copy the two scripts somewhere together and make the local one executable; `install` below copies the host one across:
+Copy the three scripts somewhere together and make the local two executable; `install` below copies the host one across:
 
 ```sh
 mkdir -p ~/bin
-cp agt-remote.sh agt-remote-host.sh ~/bin/
-chmod +x ~/bin/agt-remote.sh
+cp agt-remote.sh agt-remote-relay.py agt-remote-host.sh ~/bin/
+chmod +x ~/bin/agt-remote.sh ~/bin/agt-remote-relay.py
 ```
 
 Create `~/.config/agt-remote/config`. It is sourced by the script, so it is plain shell:
@@ -81,7 +81,7 @@ Everything on the host is done from the Mac, in four commands. Each is safe to r
 ~/bin/agt-remote.sh install
 ```
 
-Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), and runs the host script's `setup`, which: creates the projects root; appends to `~/.tmux.conf` the lines that let the agent's clipboard and notification escapes through and pin `SSH_AUTH_SOCK` to a fixed path; writes `~/.ssh/rc` to repoint that path at the forwarded agent on every login, so `git` keeps working inside tmux after a reattach; makes `~/.profile` source `~/.agt-remote/env`; adds the github and gitlab host keys to `known_hosts`; and merges the four status hooks into `~/.claude/settings.json`, keeping whatever hooks are already there and backing the file up first. Those four events match what agterm's own **Install Agent Status Hooks…** wires up locally; `agt-remote-host.sh hooks` prints the block if you would rather merge it by hand.
+Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), and runs the host script's `setup`, which: creates the projects root; appends to `~/.tmux.conf` the lines that let the agent's clipboard and notification escapes through and pin `SSH_AUTH_SOCK` to a fixed path; writes `~/.ssh/rc` to repoint that path at the forwarded agent on every login, so `git` keeps working inside tmux after a reattach; makes `~/.profile` source `~/.agt-remote/env`; copies this Mac's `known_hosts` entries for github.com and gitlab.com to the host, so the host trusts exactly the forge keys the Mac has already verified and nothing is scanned blind (no entry here means none there, and the first clone then fails with a host-key error: run `ssh -T git@github.com` on the Mac once and reinstall); and merges the four status hooks into `~/.claude/settings.json`. The merge keeps every hook already there, refuses to touch a file that is not valid JSON, keeps the file's mode, and takes a timestamped backup only when it actually changes something. Those four events match what agterm's own **Install Agent Status Hooks…** wires up locally; `agt-remote-host.sh hooks` prints the block if you would rather merge it by hand.
 
 **2. Sign in.** Claude Code on the host needs your subscription. On the Mac, `claude setup-token` opens the browser and prints a long-lived token; hand it over:
 
@@ -130,7 +130,9 @@ The tab is `session new --command`, with the script itself as the command, so th
 
 On the host, `tmux new-session -d` followed by `attach-session -d` is the whole create-or-reattach story: `has-session` decides, and `-d` on attach detaches any other client so a tab forgotten on another machine cannot shrink this one. The agent starts through `send-keys` into the new session's shell rather than as the session's command, so when it exits the shell is still there and the tmux session survives. Its session id is a UUID minted on first creation and written to `~/.agt-remote/NAME.claude`; a later creation of a tmux session by the same name finds the file and, if the transcript exists under `~/.claude/projects/`, starts with `--resume` instead.
 
-The status bridge is `ssh -R 127.0.0.1:PORT:<local socket>`: a TCP port on the host, loopback only, that ssh connects through to agterm's control socket on the Mac. The port is derived from the session name with `cksum`, so every reattach forwards the same one. On each attach the host script writes the target, port plus the tab's session id and pane token, to `~/.agt-remote/NAME.target`. A hook fires inside the tmux session, asks tmux which session it is in (`display-message '#S'` through the inherited `$TMUX`), reads that file, and sends one JSON line, the same `session.status` request `agtermctl` would send, to the port with a two-second timeout. Rewriting the target on every attach is what lets a tab opened tomorrow, or after an agterm restart with a new pane token, be the one that lights up.
+The status bridge has a relay on the Mac side, and that relay is the whole security story. `attach` starts `agt-remote-relay.py` on a unix socket under `~/.agt-remote/relay/`, mode 600, holding this tab's session id and pane token as fixed arguments, and forwards it with `ssh -R 127.0.0.1:PORT:<relay socket>`: a TCP port on the host, loopback only, that reaches the relay and nothing else. The relay reads one line, accepts it only if it is a `session.status` request whose status is one of the four states, rebuilds the request from scratch with its own target and pane, and only then speaks to agterm's control socket; every other line, including any target or pane the host tried to name, is answered `refused`. So what the host can do to the Mac is set this one tab's status, whatever else is on the host. The relay exits when the attach loop that started it is gone, so a hard-killed agterm leaves no listener behind.
+
+The port is derived from the session name with `cksum`, so every reattach forwards the same one. On each attach the host script writes that port to `~/.agt-remote/NAME.target`; the target itself never leaves the Mac. A hook fires inside the tmux session, asks tmux which session it is in (`display-message '#S'` through the inherited `$TMUX`), reads the port from that file, and sends one JSON line with a two-second timeout. Rewriting the file on every attach is what lets a tab opened tomorrow, or after an agterm restart with a new pane token, be the one that lights up: the new attach starts a new relay with the new token.
 
 The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-remote/`, keyed by session id, falling back to stripping the badge off the tab's name, so a tab restored from an earlier install still ends cleanly. The picker's first row is the harmless one, so a Return pressed by reflex leaves the session running.
 
@@ -144,7 +146,9 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 
 **The reconnect loop is not a session recovery.** It retries ssh; it cannot bring back a tmux session the host lost to a reboot. The next attach recreates one by the same name and resumes the conversation, if the transcript survived on the host, but whatever else ran in the old session is not started again.
 
-**The status bridge trusts the host.** Anything on the host that can reach the loopback port can post a status for that tab, and nothing else: the forwarded port speaks only to this one socket with this one request shape, but the socket answers every control command, so a process on the host with the port and the tab's session id could drive that tab. On a host you share with people you do not trust, set `AGT_REMOTE_STATUS=0` in the config: no port is forwarded and the hooks, if installed, post nowhere.
+**The status bridge lets the host set this tab's status, and only that.** Anything on the host that can reach the loopback port, another user on a shared host included, can make the row pulse, go blocked or flash completed for that tab. It cannot name another tab, run a command, read the tree or reach any other control command: the relay on the Mac rebuilds every request and refuses everything but a status. A wrong status is the worst case, and `AGT_REMOTE_STATUS=0` in the config removes even that: no relay, no port, and the hooks, if installed, post nowhere.
+
+**The bridge port is a hash of the name, and hashes can collide.** Two sessions whose names hash to the same port make the second `ssh -R` fail to bind, with a warning in that tab, and the second session's statuses then land on the first tab until it detaches. The same happens for a moment when one session is reattached from a second tab while the first is still connected. Rename one of the two, or live with a wrong pulse now and then.
 
 **Names are sanitized, not free.** A session name with a space becomes hyphens; one with a dot, colon or anything outside letters, digits, `-` and `_` is refused with a banner, because tmux reads `.` and `:` as target syntax. Project directories may carry dots.
 
@@ -156,6 +160,8 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 
 **`AGT_REMOTE_COMMAND` and `AGT_REMOTE_PROJECTS` may not contain a single quote**, because both are spliced into a single-quoted word on the remote command line; the script refuses at startup rather than mangling them.
 
-**`install` edits files on the host.** `~/.tmux.conf`, `~/.ssh/rc`, `~/.profile`, `~/.ssh/known_hosts` and `~/.claude/settings.json` each gain a marked block or entry, once; a `~/.ssh/rc` that already exists also stops sshd's default X11 handling, which a headless host does not miss. `sync` runs `rsync --delete` on the four items it copies, so a skill that exists only on the host is removed by the next sync.
+**`install` edits files on the host.** `~/.tmux.conf`, `~/.ssh/rc`, `~/.profile`, `~/.ssh/known_hosts` and `~/.claude/settings.json` each gain a marked block or entry, once; a `~/.ssh/rc` that already exists also stops sshd's default X11 handling, which a headless host does not miss. A `settings.json` that is not valid JSON is reported and left alone, and the hooks are then missing until you fix it and rerun.
+
+**A failed reconnect pin is reported, not fixed.** If `session restore` cannot save the tab's reconnect line, the tab still opens and works, and a banner carries the exact `attach` command to run by hand after the next agterm restart. `sync` runs `rsync --delete` on the four items it copies, so a skill that exists only on the host is removed by the next sync.
 
 **The token in `~/.agt-remote/env` is your subscription.** It is a file on the host, readable by your user there; treat host access as account access, and rotate it with `auth` if the host is ever shared or lost.

@@ -86,8 +86,8 @@ remote() {
 
 require_host() {
 	[ -n "$HOST" ] || fail "AGT_REMOTE_HOST is not set; see $CONFIG"
-	case $PROJECTS$COMMAND in
-	*"'"*) fail "AGT_REMOTE_PROJECTS and AGT_REMOTE_COMMAND may not contain a single quote" ;;
+	case $PROJECTS$COMMAND$REMOTE_BIN in
+	*"'"*) fail "AGT_REMOTE_PROJECTS, AGT_REMOTE_COMMAND and AGT_REMOTE_BIN may not contain a single quote" ;;
 	esac
 }
 
@@ -182,7 +182,8 @@ open() {
 
 	# the tab reattaches on its own after an agterm restart: a pinned line rather
 	# than the captured foreground, which would replay a bare ssh with no loop.
-	agt session restore "$run" --target "$sid" >/dev/null 2>&1 || true
+	agt session restore "$run" --target "$sid" >/dev/null 2>&1 ||
+		notify "$name opened, but its reconnect line could not be pinned: after an agterm restart run: $run"
 
 	mkdir -p "$STATE_DIR/index"
 	printf '%s\t%s\n' "$name" "$project" >"$STATE_DIR/$(canonical_id "$sid")"
@@ -201,10 +202,36 @@ attach() {
 		exec "${SHELL:-/bin/sh}" -l
 	}
 	require_host
-	port=$(port_for "$name")
-	sid=${AGTERM_SESSION_ID:-}
-	pane=${AGTERM_PANE:-}
-	pane_id=${AGTERM_PANE_ID:-}
+	port=""
+	relay_pid=""
+	relay_sock=""
+
+	# the status bridge: a relay on this side owns the tab's target and accepts
+	# nothing but a status, so the host never sees the control socket itself
+	if [ "$STATUS" = 1 ] && [ -n "$socket" ] && [ -n "${AGTERM_SESSION_ID:-}" ]; then
+		if command -v python3 >/dev/null 2>&1; then
+			mkdir -p "$STATE_DIR/relay"
+			chmod 700 "$STATE_DIR/relay"
+			relay_sock=$STATE_DIR/relay/$name.sock
+			python3 "$(dirname "$SELF")/agt-remote-relay.py" --listen "$relay_sock" --agterm "$socket" \
+				--target "$AGTERM_SESSION_ID" --pane "${AGTERM_PANE:-}" --pane-id "${AGTERM_PANE_ID:-}" &
+			relay_pid=$!
+			i=0
+			while [ ! -S "$relay_sock" ] && [ "$i" -lt 20 ]; do
+				sleep 0.1
+				i=$((i + 1))
+			done
+			if [ -S "$relay_sock" ]; then
+				port=$(port_for "$name")
+			else
+				kill "$relay_pid" 2>/dev/null
+				relay_pid=""
+				printf '[%s] status bridge did not start; the row will stay idle\n' "$name"
+			fi
+		else
+			printf '[%s] no python3 on this Mac; statuses stay idle\n' "$name"
+		fi
+	fi
 
 	# Ctrl-C while reconnecting stops the loop and leaves a local shell in the tab
 	stop=0
@@ -212,14 +239,12 @@ attach() {
 
 	# ssh joins its arguments with spaces into one remote line, so an empty one
 	# would vanish and shift the rest; every word is quoted for the remote shell
-	line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '$sid' '$pane' '$pane_id' '$port' '$COMMAND'"
+	line="AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN attach '$name' '$project' '$port' '$COMMAND'"
 
 	while [ "$stop" -eq 0 ]; do
-		if [ "$STATUS" = 1 ] && [ -n "$socket" ] && [ -n "$sid" ]; then
-			# the status bridge: the host's hooks reach this tab's agterm through a
-			# TCP port on the host that ssh forwards to the local control socket
+		if [ -n "$port" ]; then
 			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-				-R "127.0.0.1:$port:$socket" "$HOST" "$line"
+				-R "127.0.0.1:$port:$relay_sock" "$HOST" "$line"
 		else
 			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$HOST" "$line"
 		fi
@@ -243,6 +268,8 @@ attach() {
 	done
 	trap - INT
 
+	# exec keeps this pid, so the relay's parent check would never fire: stop it here
+	[ -n "$relay_pid" ] && kill "$relay_pid" 2>/dev/null
 	rm -f "$STATE_DIR/index/$name"
 	printf '[%s] detached; "%s attach %s %s" reattaches\n' "$name" "$SELF" "$name" "$project"
 	exec "${SHELL:-/bin/sh}" -l
@@ -289,6 +316,7 @@ install() {
 	require_host
 	src=$(dirname "$SELF")/agt-remote-host.sh
 	[ -f "$src" ] || fail "agt-remote-host.sh is not beside $SELF"
+	[ -f "$(dirname "$SELF")/agt-remote-relay.py" ] || fail "agt-remote-relay.py is not beside $SELF"
 	dir=$(dirname "$REMOTE_BIN")
 	# shellcheck disable=SC2029 # the paths are meant to expand here, for the host's shell
 	ssh "$HOST" "mkdir -p '$dir' && cat > '$REMOTE_BIN' && chmod +x '$REMOTE_BIN'" <"$src" ||
@@ -297,7 +325,13 @@ install() {
 	if [ -n "${TERM:-}" ] && infocmp -x "$TERM" >/dev/null 2>&1; then
 		infocmp -x "$TERM" | ssh "$HOST" "tic -x - 2>/dev/null || true"
 	fi
-	remote setup
+	# the forges' host keys travel from this Mac's known_hosts, which has already
+	# verified them, rather than being scanned and trusted on the host blind
+	{
+		for h in github.com gitlab.com; do
+			ssh-keygen -F "$h" -f "$HOME/.ssh/known_hosts" 2>/dev/null | grep -v '^#'
+		done
+	} | remote setup
 }
 
 # the token is read here and travels on stdin, so it never sits in a process
@@ -314,6 +348,7 @@ auth() {
 		printf '\n'
 	fi
 	[ -n "$token" ] || fail "no token given"
+	printf '%s' "$token" | grep -Eqx '[A-Za-z0-9_-]+' || fail "that does not look like a token"
 	printf '%s\n' "$token" | ssh -o BatchMode=yes "$HOST" "AGT_REMOTE_PROJECTS='$PROJECTS' $REMOTE_BIN auth"
 }
 

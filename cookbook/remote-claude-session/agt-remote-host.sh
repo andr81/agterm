@@ -2,9 +2,9 @@
 # agt-remote-host.sh - the host half of agt-remote.sh. Lives on the remote
 # machine; agt-remote.sh calls it over ssh. See README.md.
 #
-#   attach NAME PROJECT [SID PANE PANE_ID PORT] [CMD]
+#   attach NAME PROJECT [PORT] [CMD]
 #                    create the tmux session, start CMD in it on first creation,
-#                    record where its statuses go, and attach
+#                    record the port its statuses go to, and attach
 #   status STATE [--blink] [--auto-reset]
 #                    an agent hook: post STATE to the agterm tab attached here
 #   list             sessions and projects as TSV, for the picker
@@ -27,16 +27,18 @@ valid_project() { [[ $1 =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$ ]]; }
 # ---------------------------------------------------------------- attach
 
 attach() {
-	local name=$1 project=$2 sid=${3:-} pane=${4:-} pane_id=${5:-} port=${6:-} cmd=${7:-claude}
+	local name=$1 project=$2 port=${3:-} cmd=${4:-claude}
 	valid_name "$name" || { echo "bad session name: $name" >&2; exit 2; }
+	valid_project "$project" || { echo "bad project name: $project" >&2; exit 2; }
 	local dir=$PROJECTS/$project
 	[[ -d $dir ]] || { echo "no such project on $(hostname): $dir" >&2; exit 2; }
 
 	mkdir -p "$STATE"
-	# where this session's statuses go: rewritten on every attach, so a tab
-	# opened later, or after an agterm restart, is the one that lights up
-	if [[ -n $sid && -n $port ]]; then
-		printf '%s\t%s\t%s\t%s\n' "$port" "$sid" "$pane" "$pane_id" >"$STATE/$name.target"
+	# the port this session's statuses go to: rewritten on every attach, so a
+	# tab opened later, or after an agterm restart, is the one that lights up.
+	# The relay on the Mac side owns the target; nothing about it is stored here.
+	if [[ $port =~ ^[0-9]{1,5}$ ]]; then
+		printf '%s\n' "$port" >"$STATE/$name.target"
 	else
 		rm -f "$STATE/$name.target"
 	fi
@@ -86,15 +88,12 @@ status() {
 		import json, socket, sys
 		state, blink, reset = sys.argv[1], sys.argv[2] == "true", sys.argv[3] == "true"
 		with open(sys.argv[4]) as f:
-		    fields = f.readline().rstrip("\n").split("\t") + ["", "", "", ""]
-		port, sid, pane, pane_id = fields[0], fields[1], fields[2], fields[3]
+		    port = int(f.readline().strip())
 		args = {"status": state}
 		if blink: args["blink"] = True
 		if reset: args["autoReset"] = True
-		if pane: args["pane"] = pane
-		if pane_id: args["paneID"] = pane_id
-		req = {"cmd": "session.status", "target": sid, "args": args}
-		with socket.create_connection(("127.0.0.1", int(port)), timeout=2) as s:
+		req = {"cmd": "session.status", "args": args}
+		with socket.create_connection(("127.0.0.1", port), timeout=2) as s:
 		    s.sendall((json.dumps(req) + "\n").encode())
 		    s.recv(4096)
 	EOF
@@ -155,14 +154,17 @@ setup() {
 		[ -f "$HOME/.agt-remote/env" ] && . "$HOME/.agt-remote/env"
 	EOF
 
-	# clones from the forges must not stop at a host-key prompt nobody can answer
-	local kh=$HOME/.ssh/known_hosts h
+	# clones must not stop at a host-key prompt nobody can answer: the entries
+	# arrive on stdin from the Mac's own known_hosts, already verified there
+	local kh=$HOME/.ssh/known_hosts line
 	touch "$kh"
-	for h in github.com gitlab.com; do
-		grep -qs "^$h " "$kh" || ssh-keyscan -t ed25519,rsa "$h" >>"$kh" 2>/dev/null
+	chmod 600 "$kh"
+	while IFS= read -r line; do
+		[[ -n $line && $line != \#* ]] || continue
+		grep -qxF -- "$line" "$kh" || printf '%s\n' "$line" >>"$kh"
 	done
 
-	merge_hooks
+	merge_hooks || echo "hooks NOT merged; fix ~/.claude/settings.json and rerun install" >&2
 	command -v tmux >/dev/null || echo "tmux is not installed" >&2
 	command -v python3 >/dev/null || echo "python3 is not installed (the status bridge needs it)" >&2
 	command -v uuidgen >/dev/null || echo "uuidgen is not installed" >&2
@@ -172,25 +174,33 @@ setup() {
 }
 
 # adds the four status hooks to ~/.claude/settings.json, keeping everything
-# already there; a hook whose command is already present is not added twice
+# already there. A file that is not a JSON object is left untouched and
+# reported; a file that needs no change is not rewritten and not backed up.
 merge_hooks() {
 	local settings=$HOME/.claude/settings.json
-	[[ -f $settings ]] && cp "$settings" "$settings.bak-agt-remote"
 	python3 - "$settings" "$SELF" <<-'EOF'
-		import json, os, sys
+		import json, os, shutil, sys, time
 		path, me = sys.argv[1], sys.argv[2]
-		try:
-		    with open(path) as f:
-		        data = json.load(f)
-		except (FileNotFoundError, json.JSONDecodeError):
-		    data = {}
+		data, mode = {}, 0o600
+		if os.path.exists(path):
+		    mode = os.stat(path).st_mode & 0o777
+		    try:
+		        with open(path) as f:
+		            data = json.load(f)
+		    except (OSError, ValueError) as e:
+		        sys.exit(f"{path} is not valid JSON, left as is: {e}")
+		    if not isinstance(data, dict):
+		        sys.exit(f"{path} is not a JSON object, left as is")
 		hooks = data.setdefault("hooks", {})
+		if not isinstance(hooks, dict):
+		    sys.exit(f"{path}: 'hooks' is not an object, left as is")
 		wanted = [
 		    ("UserPromptSubmit", None, "active --blink"),
 		    ("PostToolUse", None, "active --blink"),
 		    ("Stop", None, "completed --auto-reset"),
 		    ("Notification", "permission_prompt", "blocked"),
 		]
+		changed = False
 		for event, matcher, state in wanted:
 		    cmd = f"{me} status {state}"
 		    groups = hooks.setdefault(event, [])
@@ -200,10 +210,17 @@ merge_hooks() {
 		    if matcher:
 		        group["matcher"] = matcher
 		    groups.append(group)
+		    changed = True
+		if not changed:
+		    sys.exit(0)
+		if os.path.exists(path):
+		    shutil.copy2(path, f"{path}.bak-agt-remote-{int(time.time())}")
 		tmp = path + ".tmp"
-		with open(tmp, "w") as f:
+		fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+		with os.fdopen(fd, "w") as f:
 		    json.dump(data, f, indent=2)
 		    f.write("\n")
+		os.chmod(tmp, mode)
 		os.replace(tmp, path)
 	EOF
 }
@@ -226,7 +243,7 @@ hooks() {
 auth() {
 	local token
 	IFS= read -r token
-	[[ -n $token ]] || { echo "no token on stdin" >&2; exit 2; }
+	[[ $token =~ ^[A-Za-z0-9_-]+$ ]] || { echo "no usable token on stdin" >&2; exit 2; }
 	mkdir -p "$STATE"
 	local env=$STATE/env
 	touch "$env"
@@ -240,6 +257,8 @@ auth() {
 
 clone() {
 	local url=$1 name=${2:-}
+	# a URL that starts with a dash is an option to git, --upload-pack included
+	[[ $url != -* ]] || { echo "bad URL: $url" >&2; exit 2; }
 	[[ -n $name ]] || { name=${url##*/}; name=${name%.git}; }
 	valid_project "$name" || { echo "bad project name: $name" >&2; exit 2; }
 	mkdir -p "$PROJECTS"
@@ -247,11 +266,11 @@ clone() {
 		echo "$PROJECTS/$name already exists"
 		return 0
 	fi
-	git clone "$url" "$PROJECTS/$name"
+	git clone -- "$url" "$PROJECTS/$name"
 }
 
 case ${1:-} in
-attach) attach "${2:?name}" "${3:?project}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-claude}" ;;
+attach) attach "${2:?name}" "${3:?project}" "${4:-}" "${5:-claude}" ;;
 status) shift; status "$@" ;;
 list) list ;;
 kill) kill_session "${2:?name}" ;;
@@ -260,7 +279,7 @@ auth) auth ;;
 clone) clone "${2:?url}" "${3:-}" ;;
 hooks) hooks ;;
 *)
-	echo "usage: ${0##*/} attach NAME PROJECT [SID PANE PANE_ID PORT] [CMD] | status STATE [--blink] [--auto-reset] | list | kill NAME | setup | auth | clone URL [NAME] | hooks" >&2
+	echo "usage: ${0##*/} attach NAME PROJECT [PORT] [CMD] | status STATE [--blink] [--auto-reset] | list | kill NAME | setup | auth | clone URL [NAME] | hooks" >&2
 	exit 2
 	;;
 esac
