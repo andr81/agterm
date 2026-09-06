@@ -1,0 +1,137 @@
+# Remote Claude session
+
+One chord opens a tab that runs Claude Code inside a tmux session on a remote host, reconnects on its own, and reports the agent's status onto its own sidebar row.
+
+## What it does
+
+A laptop that goes to sleep, gets closed, or comes along in a bag takes every local agent with it. Moving the agent to a server that stays up fixes that, and the price is usually a handful of manual steps every time: ssh in, find or create the tmux session, `cd` to the project, start the agent, and do it all again after the connection drops.
+
+This recipe folds those steps into two chords and one script on each side.
+
+- **Open.** Press the key, and a picker lists the sessions already running on the host, then the projects it holds. Pick a session to reattach to it, or pick a project and type a name for a new one. A tab opens, named `⇅ name` so it reads as remote in the sidebar, in a workspace named after the project. Inside, ssh connects, tmux creates or attaches the session, and on the first creation Claude Code starts in the project's directory.
+- **Reconnect.** When the connection drops, from sleep or a change of network, the tab reconnects a few seconds later by itself; the tmux session and the agent in it never noticed. After an agterm restart the tab comes back already reattaching, because its restore line is pinned to the same command.
+- **Status.** The agent's lifecycle hooks on the host reach this tab's sidebar row through a port ssh forwards back to the local control socket, so the row pulses active, goes blocked on a permission prompt and flashes completed, the way a local session does.
+- **End.** A second chord kills the remote tmux session, after a picker asks, and closes the tab. Detaching without killing is tmux's own `prefix d`, or just closing the tab: the session stays on the host, and the next open lists it.
+
+Conversations survive more than the connection. The Claude Code session id is pinned to the tmux session's name on the host, so a host reboot brings the same conversation back with `--resume` on the next attach rather than starting a fresh one.
+
+## Requirements
+
+- agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore` and `session status --pane-id` the recipe rides on are all older than that.
+- `jq` and `ssh` on the Mac.
+- On the host: `tmux`, `python3`, `uuidgen` (util-linux), and Claude Code installed and already signed in. The recipe starts `claude`; it does not install or authenticate it.
+- Key-based ssh to the host that works without a prompt, from a process with no terminal: a key held by the macOS agent, or one without a passphrase.
+
+## Setup
+
+### On your Mac
+
+Copy the two scripts somewhere together and make the local one executable; `install` below copies the host one across:
+
+```sh
+mkdir -p ~/bin
+cp agt-remote.sh agt-remote-host.sh ~/bin/
+chmod +x ~/bin/agt-remote.sh
+```
+
+Create `~/.config/agt-remote/config`. It is sourced by the script, so it is plain shell:
+
+```sh
+AGT_REMOTE_HOST=devbox                 # an ssh alias, or user@host
+AGT_REMOTE_PROJECTS=projects           # the projects root on the host, relative to its $HOME or absolute
+AGT_REMOTE_LOCAL_PROJECTS=$HOME/projects  # where the same projects live here, for the tab's local shell
+AGT_REMOTE_COMMAND=claude              # what starts in a new session; may not contain a single quote
+AGT_REMOTE_BADGE='⇅ '                  # the sidebar prefix; set it empty to keep bare names
+```
+
+A config file rather than variables on the keymap line, because two of the script's callers never see the keymap's environment: the tab's own process, and the line agterm replays after a restart.
+
+Give the host an entry in `~/.ssh/config`. The first two lines are what make the picker instant and let every tab share one connection; the last two are what turns a dead connection into a reconnect within a minute instead of a frozen tab:
+
+```
+Host devbox
+  HostName 203.0.113.10
+  User ubuntu
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%C
+  ControlPersist 10m
+  ServerAliveInterval 15
+  ServerAliveCountMax 4
+```
+
+Add the chords to `~/.config/agterm/keymap.conf` and apply with File ▸ Reload Keymap:
+
+```
+command "Remote session" ctrl+shift+n>r ~/bin/agt-remote.sh open
+command "Remote end"     ctrl+shift+n>x ~/bin/agt-remote.sh end "{AGT_SESSION_ID}"
+```
+
+Any chord with a modifier works; a leader pair is shown because the two commands read as one family. If `agtermctl` is not on your `PATH`, set `AGTERMCTL` to its full path in the config file.
+
+### On the host
+
+Run once from the Mac:
+
+```sh
+~/bin/agt-remote.sh install
+```
+
+It copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), creates the projects root, and appends three lines to the host's `~/.tmux.conf` that let the agent's clipboard and notification escapes pass through tmux.
+
+Then, on the host, put the status hooks into `~/.claude/settings.json`. The host script prints the block with its own absolute path filled in:
+
+```sh
+~/.local/bin/agt-remote-host.sh hooks
+```
+
+Merge it with any hooks already there; the four events match what agterm's own **Install Agent Status Hooks…** wires up locally. Without this step everything else works and the row simply stays idle.
+
+Clone the projects under the root you named. Every direct subdirectory of it is one picker row.
+
+## Usage
+
+Press ⌃⇧N then R. The picker shows the host's running sessions first, each marked with the badge and noting whether something is attached, then the projects. Return on a session reattaches; Return on a project opens a second prompt, prefilled with the project's name, for the session's name. Esc anywhere opens nothing.
+
+The tab opens in a workspace named after the project, with the badge in front of the session's name. Claude Code is already starting in the project's directory on the host.
+
+Close the laptop, open it later: the tab prints that it lost the connection and is reconnecting, then the tmux session is back where you left it. Ctrl-C during the countdown stops the retrying and leaves a local shell in the tab.
+
+Press ⌃⇧N then X in a remote tab to end it. The picker opens on "Leave running"; choose the kill row to stop the tmux session and close the tab. A plain ⌘W closes the tab and leaves the session running on the host.
+
+From any shell, `~/bin/agt-remote.sh list` prints the host's sessions and projects, and `~/bin/agt-remote.sh attach NAME PROJECT` reattaches by hand.
+
+## How it works
+
+The local script has three callers with three environments, and the design mostly follows from keeping them straight. The chord runs it detached, with `$AGT_SOCKET` and `$AGT_WINDOW_ID` and no terminal, so everything it has to say goes through `agtermctl notify`. The tab's process runs it with a terminal and the session's own `$AGTERM_*` variables. The restore line runs it typed into a fresh login shell after a restart. The config file is the one thing all three share.
+
+`open` makes one ssh round trip, `agt-remote-host.sh list`, which prints running sessions and projects as TSV, and turns that into the picker's items with the session rows first. A picked session already carries its project, from tmux's own record of the directory it started in. A picked project opens a second `pick` with `--allow-custom` and no items, which is the palette's plain text prompt; the name is limited to letters, digits, `-` and `_`, since it becomes a tmux session name, a file name and an argv word on the remote command line.
+
+The tab is `session new --command`, with the script itself as the command, so the process in the tab is the reconnect loop rather than a bare ssh. The loop runs `ssh -t` with the host script's `attach` as the remote command. Exit 255 is ssh's own "connection failed or dropped"; the loop waits `AGT_REMOTE_RETRY` seconds (5) and goes again. Any other exit is the remote command finishing, a detach or a killed session, and the loop hands the tab to a login shell so the scrollback stays readable and the tab does not vanish. `session restore` pins the same line, because the alternative, agterm's captured foreground, would replay the bare `ssh` and lose the loop.
+
+On the host, `tmux new-session -d` followed by `attach-session -d` is the whole create-or-reattach story: `has-session` decides, and `-d` on attach detaches any other client so a tab forgotten on another machine cannot shrink this one. The agent starts through `send-keys` into the new session's shell rather than as the session's command, so when it exits the shell is still there and the tmux session survives. Its session id is a UUID minted on first creation and written to `~/.agt-remote/NAME.claude`; a later creation of a tmux session by the same name finds the file and, if the transcript exists under `~/.claude/projects/`, starts with `--resume` instead.
+
+The status bridge is `ssh -R 127.0.0.1:PORT:<local socket>`: a TCP port on the host, loopback only, that ssh connects through to agterm's control socket on the Mac. The port is derived from the session name with `cksum`, so every reattach forwards the same one. On each attach the host script writes the target, port plus the tab's session id and pane token, to `~/.agt-remote/NAME.target`. A hook fires inside the tmux session, asks tmux which session it is in (`display-message '#S'` through the inherited `$TMUX`), reads that file, and sends one JSON line, the same `session.status` request `agtermctl` would send, to the port with a two-second timeout. Rewriting the target on every attach is what lets a tab opened tomorrow, or after an agterm restart with a new pane token, be the one that lights up.
+
+The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-remote/`, keyed by session id, falling back to stripping the badge off the tab's name, so a tab restored from an earlier install still ends cleanly. The picker's first row is the harmless one, so a Return pressed by reflex leaves the session running.
+
+## Limits
+
+**`end` kills the remote tmux session and everything in it, then closes the local tab.** The agent, any server or watcher running in that session, and its scrollback on the host are gone; the tab's local scrollback goes with the tab. There is no undo on the host side. The picker is the one confirmation.
+
+**Closing the tab any other way leaves the session running on the host.** ⌘W, a closed window, quitting agterm: none of them reach tmux. That is the point of the recipe, but it also means sessions accumulate on the host until you end them; `list` shows what is there.
+
+**A remote tab is not restored by the "Restore running commands" denylist logic.** The pinned restore line bypasses the denylist by design, so the tab always reattaches after a restart, and the setting has to be on for it to happen at all. With it off, a restarted tab is a plain shell and `attach NAME PROJECT` by hand brings it back.
+
+**The reconnect loop is not a session recovery.** It retries ssh; it cannot bring back a tmux session the host lost to a reboot. The next attach recreates one by the same name and resumes the conversation, if the transcript survived on the host, but whatever else ran in the old session is not started again.
+
+**The status bridge trusts the host.** Anything on the host that can reach the loopback port can post a status for that tab, and nothing else: the forwarded port speaks only to this one socket with this one request shape, but the socket answers every control command, so a process on the host with the port and the tab's session id could drive that tab. On a host you share with people you do not trust, set `AGT_REMOTE_STATUS=0` in the config: no port is forwarded and the hooks, if installed, post nowhere.
+
+**Names are sanitized, not free.** A session name with a space becomes hyphens; one with a dot, colon or anything outside letters, digits, `-` and `_` is refused with a banner, because tmux reads `.` and `:` as target syntax. Project directories may carry dots.
+
+**Two agents cannot share a name.** The conversation id is pinned to the tmux session's name, so `new-session` twice for the same name, with the first one gone but its transcript present, resumes that transcript rather than starting clean. Pick a fresh name for fresh work, or delete `~/.agt-remote/NAME.claude` on the host.
+
+**The picker reads the host live.** With the host down or unreachable, the open chord raises a banner and opens nothing; there is no cached list. With `ControlMaster` configured the round trip is milliseconds, without it every open pays a full ssh handshake.
+
+**Chords inside a scratch terminal or overlay can resolve to the wrong session.** `end` takes the session the chord fired in; from a scratch pane that may be a different tab than the one on screen. The picker names the session it is about to kill, so read the row.
+
+**`AGT_REMOTE_COMMAND` and `AGT_REMOTE_PROJECTS` may not contain a single quote**, because both are spliced into a single-quoted word on the remote command line; the script refuses at startup rather than mangling them.
