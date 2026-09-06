@@ -149,10 +149,12 @@ final class AskDialogViewTests: XCTestCase {
         catcher.keyDown(with: try event(36))
         XCTAssertEqual(selected, 0)
         catcher.keyDown(with: try event(48, modifiers: .shift))
-        let scroll = try XCTUnwrap(descendant(NSScrollView.self, in: host))
-        for _ in 0..<30 where scroll.contentView.bounds.minY == 0 {
+        let deadline = Date(timeIntervalSinceNow: 2)
+        var scroll = try XCTUnwrap(descendant(NSScrollView.self, in: host))
+        while scroll.contentView.bounds.minY == 0, Date() < deadline {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
             host.layoutSubtreeIfNeeded()
+            scroll = try XCTUnwrap(descendant(NSScrollView.self, in: host))
         }
         XCTAssertGreaterThan(scroll.contentView.bounds.minY, 0)
         catcher.keyDown(with: try event(36))
