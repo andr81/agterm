@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.27.0 - 2026-09-07
+
+### New Features
+
+- **`ask`, a question dialog driven from the control API.** `agtermctl ask` puts a question with a title, an optional message and one to six caller-named buttons in front of the user and returns the pressed button, `escaped` for Esc or Cmd-W, or `cancelled` when the dialog is withdrawn by `ask cancel`, quit or the loss of what it was anchored to. The CLI blocks until answered and reports the outcome in its exit code, so a hook or an agent can ask before acting and read the answer in one call. Return picks the highlighted button, Tab and the arrow keys move between them, and letter hotkeys pick directly. Two styles share the contract: the default `terminal` style draws in theme colors with the terminal font, and `gui` reuses the picker's material panel with native buttons. A terminal ask belongs to the session it targets, one per session and optionally narrowed to a pane, so it covers only that region and the rest of the window keeps working: an agent in one pane can ask about the other pane without losing its own keyboard, and asks can stand in several sessions at once. A GUI ask is window-modal and shares the pending slot with `pick`. The tree reads a pending ask back on the session node, or as `askPending` at the top level for the GUI style #556 #561 @umputun
+- two cookbook recipes. `agent-reset` replaces `claude-clear`: one chord clears Claude Code or Codex in the pane it fires from, and fired from the main pane it also clears the split's agent and the session's title-bar context. Codex takes the command and its submit as two writes with a pause between, because its composer buffers a burst of characters as a paste and an Enter arriving inside that window becomes a newline instead of a submit. `session-context-nudge` is a Claude Code prompt hook that shows the model the current `session context` line so it replaces it when the task changes. Both need 0.26.0 #552 #554 @umputun
+
+### Improved
+
+- the bundled agent skill says that an alternate-screen buffer has no scrollback, so neither `session text --all` nor `--lines` reaches output an editor or a TUI has already scrolled away, and points an agent reading a finished Claude Code reply at the transcript file instead 7ab68107 @umputun
+
+### Bug Fixes
+
+- the system Dictation shortcut did nothing with agterm frontmost. Dictation asks the focused text client for its selection and an insertion rectangle before it starts, and the terminal view reported no selection at all, so it had nothing to anchor on and declined. The view now reports an empty caret outside IME composition, and the stale IME range that survived a finished composition is dropped #557 @umputun #555
+- `surface cursor` answered `failed to read cursor position` for a hidden split pane while `session text` and `session type` reached the same pane. The cell width was converted at the view's window scale, and a hidden pane's view has no window. The width now comes from the scale libghostty keeps for the surface, so a hidden pane reads without being revealed #560 @umputun
+- the Codex status adapter reported a finished turn as blocked whenever the final message contained a `?` anywhere, so a literal one in prose turned a completed row into a waiting one. Code blocks and spans are set aside, and a mark counts as a question only when it follows a word and is followed by optional closing punctuation, then whitespace or the end of the message #550 @umputun
+- the cookbook's two-agent chat refused every send to a Claude Code pane whose `statusLine` pads its first segment, because a status row under the composer had to start with exactly two spaces. Two or more are accepted now, and the dialog and numbered-choice refusals are unchanged #558 @umputun #553
+
 ## v0.26.4 - 2026-09-04
 
 ### Bug Fixes
