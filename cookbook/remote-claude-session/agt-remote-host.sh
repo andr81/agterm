@@ -47,6 +47,14 @@ attach() {
 	# a TERM the host cannot name makes tmux refuse to start
 	infocmp "${TERM:-}" >/dev/null 2>&1 || export TERM=xterm-256color
 
+	# the forwarded agent reaches this session through a link of its own, repointed
+	# on every attach. One shared path would be rewritten by every other ssh command
+	# to this host, since sshd runs ~/.ssh/rc for each of them, and a short one that
+	# exits leaves it pointing at a socket that is gone: git in every live session
+	# then breaks until the next attach.
+	local agent=$STATE/$name.agent.sock
+	[[ -S ${SSH_AUTH_SOCK:-} ]] && ln -sfn "$SSH_AUTH_SOCK" "$agent"
+
 	if ! tmux has-session -t "=$name" 2>/dev/null; then
 		# the pane's own id: send-keys takes a target-pane, where the exact-match
 		# prefix that addresses a session resolves to nothing, and the command that
@@ -69,9 +77,12 @@ attach() {
 		# file the login shell reads; `sh` keeps this the same under any shell.
 		# The file is optional: a host signed in interactively has none.
 		tmux send-keys -t "$pane" \
-			"sh -c '[ -f \"$STATE/env\" ] && . \"$STATE/env\"; exec $cmd $flag $id'" Enter ||
+			"sh -c '[ -f \"$STATE/env\" ] && . \"$STATE/env\"; SSH_AUTH_SOCK=\"$agent\"; export SSH_AUTH_SOCK; exec $cmd $flag $id'" Enter ||
 			{ tmux kill-session -t "=$name" 2>/dev/null; exit 1; }
 	fi
+	# the pane above carries the link in its own environment; this is for the windows
+	# opened in the session later, which take theirs from the session
+	tmux set-environment -t "=$name" SSH_AUTH_SOCK "$agent" 2>/dev/null || true
 	# -d: the last client wins, so a tab forgotten elsewhere cannot shrink this one
 	exec tmux attach-session -d -t "=$name"
 }
@@ -125,7 +136,7 @@ kill_session() {
 	local name=$1
 	valid_name "$name" || { echo "bad session name: $name" >&2; exit 2; }
 	tmux kill-session -t "=$name" 2>/dev/null || true
-	rm -f "$STATE/$name.target" "$STATE/$name.claude"
+	rm -f "$STATE/$name.target" "$STATE/$name.claude" "$STATE/$name.agent.sock"
 }
 
 # ---------------------------------------------------------------- setup
@@ -136,24 +147,15 @@ setup() {
 	chmod 700 "$HOME/.ssh"
 
 	# OSC 52 (clipboard) and OSC 9/777 (notifications) from the agent have to
-	# pass through tmux to reach the terminal on the other side of ssh; the
-	# fixed SSH_AUTH_SOCK is what keeps a forwarded agent working after a
-	# reattach, with ~/.ssh/rc below repointing the link on every login
+	# pass through tmux to reach the terminal on the other side of ssh. Nothing
+	# here touches SSH_AUTH_SOCK: each session gets its own link, see attach.
 	local conf=$HOME/.tmux.conf
 	grep -qs 'agt-remote' "$conf" || cat >>"$conf" <<-'EOF'
 		# agt-remote: let the agent's clipboard and notification escapes through
 		set -g set-clipboard on
 		set -g allow-passthrough on
 		set -g history-limit 50000
-		set-environment -g SSH_AUTH_SOCK ~/.ssh/agent.sock
 	EOF
-
-	local rc=$HOME/.ssh/rc
-	grep -qs 'agt-remote' "$rc" || cat >>"$rc" <<-'EOF'
-		# agt-remote: a stable path for the forwarded agent, see ~/.tmux.conf
-		if [ -S "${SSH_AUTH_SOCK:-}" ]; then ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock; fi
-	EOF
-	chmod 600 "$rc"
 
 	# the token `auth` stores, and anything else the sessions should carry
 	local profile=$HOME/.profile
