@@ -6,6 +6,7 @@ extension WindowContentView {
     /// Restore keyboard ownership to whichever full-window cover was already present below a picker.
     /// The ordinary session focus helper intentionally refuses to cross these modal layers.
     func restoreFocusAfterPick() {
+        actions.resignDismissedFieldEditor(for: windowID)
         if dashboard.isOpen {
             dashboard.requestFocus()
             return

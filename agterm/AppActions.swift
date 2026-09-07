@@ -219,6 +219,7 @@ final class AppActions {
         // a control dialog has an external caller waiting: the first ⌘W layer even behind a zoomed terminal,
         // and resolved rather than hidden so the caller can finish.
         if dismissPendingModal(for: library.activeWindowID) { return true }
+        if escapePendingSessionAsk() { return true }
         // the quick-terminal panel floats above every window, so it outranks anything inside one — the window
         // rungs below read state the panel is covering, and clearing a zoom the user cannot see is a silent
         // mutation of state they never touched. Stepwise like zoom: a zoomed panel un-zooms first, the next
@@ -264,9 +265,9 @@ final class AppActions {
         return true
     }
 
-    /// cancelAllPendingModals resolves each window's pending dialog during synchronous app termination. The
-    /// library retains its open ids through quit teardown, so every mounted controller is still addressable.
+    /// Cancels both ask ownership styles and window pickers before quit tears down their owners.
     func cancelAllPendingModals() {
+        library.allOpenSessions().forEach { $0.cancelPendingAsk() }
         for windowID in library.openIDs() {
             guard let controller = PickRegistry.shared.controller(for: windowID) else { continue }
             controller.cancel()

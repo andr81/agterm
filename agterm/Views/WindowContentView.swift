@@ -181,6 +181,7 @@ struct WindowContentView: View {
         // reshuffle the selection under it and an action-palette run hit the wrong session.
         .onChange(of: palette.mode == nil) { _, closed in
             if closed {
+                actions.resignDismissedFieldEditor(for: windowID)
                 store.resumeAutoFollow()
                 actions.focusActiveSession()
             } else {
@@ -242,6 +243,7 @@ struct WindowContentView: View {
                 pickSuppressesAutoFollow = false
             }
             PickRegistry.shared.unregister(windowID)
+            store.workspaces.flatMap(\.sessions).forEach { $0.cancelPendingAsk() }
         }
     }
 
@@ -630,7 +632,7 @@ struct WindowContentView: View {
         }
     }
 
-    private var askFont: NSFont {
+    var askFont: NSFont {
         let size = actions.settingsModel?.settings.fontSize ?? GhosttyApp.shared.baseFontSize
         if let family = actions.settingsModel?.settings.fontFamily, let font = NSFont(name: family, size: size) {
             return font

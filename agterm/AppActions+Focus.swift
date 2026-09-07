@@ -26,6 +26,17 @@ extension AppActions {
 
     // MARK: - Modal focus guards
 
+    /// Resigns a dismissed field editor before handing focus to the terminal or ask.
+    func resignDismissedFieldEditor(for windowID: UUID?) {
+        guard let windowID, library.activeWindowID == windowID, !renamePending, palette?.mode == nil,
+              PickRegistry.shared.controller(for: windowID)?.modalPending != true,
+              let window = NSApp.windows.first(where: { WindowRegistry.shared.windowID(for: $0) == windowID }),
+              window.firstResponder is NSText else { return }
+        if let editor = window.firstResponder as? NSTextView, let field = editor.delegate as? NSTextField,
+           (field.delegate as? SidebarRenameController)?.isEditing == true { return }
+        window.makeFirstResponder(nil)
+    }
+
     /// Whether the frontmost window's dashboard grid overlay is open. Like a zoom or an open palette it is
     /// modal and its key-catcher owns first responder, so `focusActiveSession` must not grab the active
     /// session's surface while it is up (that surface is a view-only grid cell).
@@ -33,8 +44,7 @@ extension AppActions {
         DashboardControllerRegistry.shared.controller(for: library.activeWindowID)?.isOpen == true
     }
 
-    /// Whether the specified window has a control picker or ask pending. Kept as one window-scoped
-    /// predicate so both frontmost and session-addressed focus paths use the same modal invariant.
+    /// Checks the window slot for a pick or GUI ask; terminal asks are checked through `deferFocusToAsk`.
     func pickActive(for windowID: WindowInfo.ID?) -> Bool {
         PickRegistry.shared.controller(for: windowID)?.modalPending == true
     }
@@ -45,6 +55,14 @@ extension AppActions {
               controller.pendingAsk != nil else { return false }
         controller.escapeAsk()
         return true
+    }
+
+    /// Dismisses only the session dialog currently eligible to receive keys.
+    func escapePendingSessionAsk() -> Bool {
+        guard let session = store?.activeSession, let ask = session.askPending,
+              let catcher = AskKeyCatcher.KeyCatcherView.sessionCatchers.object(forKey: session.id as NSUUID),
+              catcher.canFocus else { return false }
+        return session.resolveAsk(id: ask.id, ControlAskResult(result: .escaped))
     }
 
     /// Whether terminal zoom is active in the window OWNING this session — the right gate for the
@@ -137,6 +155,7 @@ extension AppActions {
         if pickActive(for: library.activeWindowID) { return }
         if quickTerminal.holdsKey { return }
         if let view = store?.activeSession?.topmostSurface as? GhosttySurfaceView, let window = view.window {
+            guard !view.deferFocusToAsk() else { return }
             window.makeFirstResponder(view)
         }
         guard attempt < 12 else { return }
@@ -190,6 +209,7 @@ extension AppActions {
         // restores the session.
         if quickTerminal.holdsKey { return }
         if let view = session.focusTarget(wantSplit: wantSplit) as? GhosttySurfaceView, let window = view.window {
+            guard !view.deferFocusToAsk() else { return }
             window.makeFirstResponder(view)
         }
         guard attempt < 12 else { return }
