@@ -158,7 +158,7 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 
 **`AGT_REMOTE_COMMAND` and `AGT_REMOTE_PROJECTS` may not contain a single quote**, because both are spliced into a single-quoted word on the remote command line; the script refuses at startup rather than mangling them.
 
-**`install` edits files on the host.** `~/.tmux.conf`, `~/.ssh/rc`, `~/.profile`, `~/.ssh/known_hosts` and `~/.claude/settings.json` each gain a marked block or entry, once; a `~/.ssh/rc` that already exists also stops sshd's default X11 handling, which a headless host does not miss. A `settings.json` that is not valid JSON is reported and left alone, and the hooks are then missing until you fix it and rerun.
+**`install` edits files on the host.** `~/.tmux.conf`, `~/.profile`, `~/.ssh/known_hosts` and `~/.claude/settings.json` each gain a marked block or entry, once. A `settings.json` that is not valid JSON is reported and left alone, and the hooks are then missing until you fix it and rerun.
 
 **A failed reconnect pin is reported, not fixed.** If `session restore` cannot save the tab's reconnect line, the tab still opens and works, and a banner carries the exact `attach` command to run by hand after the next agterm restart. `sync` runs `rsync --delete` on the four items it copies, so a skill that exists only on the host is removed by the next sync.
 

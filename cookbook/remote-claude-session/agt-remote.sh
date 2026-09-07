@@ -439,7 +439,7 @@ auth) [ $# -eq 1 ] || fail "auth takes no arguments; it reads the token from a p
 clone) clone "${2:?url}" "${3:-}" ;;
 sync) sync_claude ;;
 *)
-	echo "usage: ${0##*/} open | attach NAME PROJECT | end [SESSION-ID] | list | install | auth [TOKEN] | clone URL [NAME] | sync" >&2
+	echo "usage: ${0##*/} open | attach NAME PROJECT | end [SESSION-ID] | list | install | auth | clone URL [NAME] | sync" >&2
 	exit 2
 	;;
 esac

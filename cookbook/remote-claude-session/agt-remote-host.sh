@@ -53,7 +53,9 @@ attach() {
 	# exits leaves it pointing at a socket that is gone: git in every live session
 	# then breaks until the next attach.
 	local agent=$STATE/$name.agent.sock
-	[[ -S ${SSH_AUTH_SOCK:-} ]] && ln -sfn "$SSH_AUTH_SOCK" "$agent"
+	if [[ -S ${SSH_AUTH_SOCK:-} ]] && ! ln -sfn "$SSH_AUTH_SOCK" "$agent"; then
+		echo "could not point $agent at the forwarded agent; git in this session will not sign" >&2
+	fi
 
 	if ! tmux has-session -t "=$name" 2>/dev/null; then
 		# the pane's own id: send-keys takes a target-pane, where the exact-match
