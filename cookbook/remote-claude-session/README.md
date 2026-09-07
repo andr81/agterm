@@ -19,7 +19,9 @@ Conversations survive more than the connection. The Claude Code session id is pi
 
 - agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore` and `session status --pane-id` the recipe rides on are all older than that.
 - `jq`, `ssh`, and Python 3.9 or later on the Mac, which macOS ships as `/usr/bin/python3`. Python runs the status relay; without it the tab still works and the row stays idle.
-- On the host: `tmux`, Python 3.9 or later, `uuidgen` (util-linux), `git`, and the Claude Code binary on the login shell's `PATH`. The recipe does not install it; it does carry your sign-in over, see Setup.
+- A Linux host you can leave running, with `bash`, `tmux`, Python 3.9 or later, `uuidgen` (util-linux), `git`, and `tic` (ncurses) for the terminfo `install` compiles there.
+- Claude Code itself on that host, which the recipe does not install: Anthropic's installer puts it in `~/.local/bin`, a directory a login shell has on `PATH` and a command handed to tmux does not, which is why the recipe starts the agent through one. `ssh devbox 'bash -lc "command -v claude"'` is the check, and the recipe carries your sign-in over, see *Setup*.
+- The host's sshd allowing remote forwarding, which is the default `AllowTcpForwarding yes`. Without it the tabs work and the sidebar rows stay idle.
 - Key-based ssh to the host that works without a prompt, from a process with no terminal: a key held by the macOS agent, or one without a passphrase. `rsync` on both sides for the optional `sync`.
 
 ## Setup
@@ -46,6 +48,8 @@ AGT_REMOTE_BADGE='⇅ '                  # the sidebar prefix; set it empty to k
 
 A config file rather than variables on the keymap line, because two of the script's callers never see the keymap's environment: the tab's own process, and the line agterm replays after a restart.
 
+Four more are read and rarely set: `AGT_REMOTE_STATUS=0` turns the status bridge off entirely, `AGT_REMOTE_RETRY` is the reconnect wait in seconds (5), `AGT_REMOTE_BIN` is where the host script lands on the host (`.local/bin/agt-remote-host.sh`), and `AGT_REMOTE_STATE` is this Mac's own bookkeeping directory (`~/.agt-remote`). `AGT_REMOTE_CONFIG` points at this file itself, so it is an environment variable rather than a line in it.
+
 Give the host an entry in `~/.ssh/config`. The `Control*` lines are what make the picker instant and let every tab share one connection; the `ServerAlive*` pair turns a dead connection into a reconnect within a minute instead of a frozen tab; `ForwardAgent` is what lets `git` on the host use this Mac's keys, so the host never holds one of its own, at a cost *Limits* spells out:
 
 ```
@@ -69,6 +73,8 @@ command "Remote session" ctrl+shift+n>r ~/bin/agt-remote.sh open
 command "Remote end"     ctrl+shift+n>x ~/bin/agt-remote.sh end "{AGT_SESSION_ID}"
 ```
 
+`{AGT_SESSION_ID}` is replaced by the session the chord fired in, and is how `end` knows which tab it is about. A custom command inherits the app's launch environment rather than a terminal's, so the script cannot read that from `$AGTERM_SESSION_ID` and the token is not optional.
+
 Any chord with a modifier works; a leader pair is shown because the two commands read as one family. If `agtermctl` is not on your `PATH`, set `AGTERMCTL` to its full path in the config file.
 
 ### On the host
@@ -82,6 +88,8 @@ Everything on the host is done from the Mac, in four commands. Each is safe to r
 ```
 
 Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), and runs the host script's `setup`, which: creates the projects root; appends to `~/.tmux.conf` the lines that let the agent's clipboard and notification escapes through; makes `~/.profile` source `~/.agt-remote/env`; copies this Mac's `known_hosts` entries for github.com and gitlab.com to the host, so the host trusts exactly the forge keys the Mac has already verified and nothing is scanned blind (no entry here means none there, and the first clone then fails with a host-key error: run `ssh -T git@github.com` on the Mac once and reinstall); and merges the four status hooks into `~/.claude/settings.json`. The merge keeps every hook already there, refuses to touch a file that is not valid JSON, keeps the file's mode, writes through a symlink rather than replacing it, and takes a timestamped backup only when it actually changes something. Those four events match what agterm's own **Install Agent Status Hooks…** wires up locally; `agt-remote-host.sh hooks` prints the block if you would rather merge it by hand.
+
+`install` reports rather than fails: a line about `tmux`, `python3`, `uuidgen` or `claude` not being there is the one warning you get, and nothing later repeats it. A missing agent in particular surfaces as a tab that opens on a bare shell with nothing running in it.
 
 **2. Sign in.** Claude Code on the host needs your subscription. On the Mac, `claude setup-token` opens the browser and prints a long-lived token; hand it over:
 
