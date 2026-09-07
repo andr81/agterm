@@ -103,7 +103,9 @@ def main():
         while os.getppid() == parent:
             try:
                 conn, _ = srv.accept()
-            except socket.timeout:
+            # not TimeoutError: the two are one class only from 3.10, and the
+            # /usr/bin/python3 this runs on is 3.9, where accept() raises this one
+            except socket.timeout:  # noqa: UP041
                 continue
             with conn:
                 serve(conn, opts)
