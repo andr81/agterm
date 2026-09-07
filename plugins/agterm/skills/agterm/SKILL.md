@@ -338,7 +338,8 @@ omitted when expanded).
 - `session text [--all] [--lines N] [--pane left|right|scratch] [--pane-id TOKEN]`: print the session buffer
   as plain text. Default is the visible screen of the focused pane; `--pane scratch` reads the scratch
   terminal even while hidden; `--pane-id "$AGTERM_PANE_ID"` follows the same terminal after a role change
-  and overrides `--pane` when it resolves; `--all` adds scrollback; `--lines N` keeps the last N lines.
+  and overrides `--pane` when it resolves; `--all` adds available scrollback (alternate-screen buffers
+  have none); `--lines N` keeps the last N lines.
 - `session search [needle] [--next|--prev|--close]` — search the terminal scrollback; prints the "N of M" counter.
 - `session split [on|off|toggle] [--axis vertical|horizontal]` · `session split close` - second shell, left/right by
   default or top/bottom with `--axis horizontal`. Omitting `--axis` preserves the current axis and the

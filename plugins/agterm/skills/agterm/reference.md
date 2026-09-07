@@ -476,7 +476,10 @@ error keeps those names for compatibility.
   with the session's terminal buffer as PLAIN TEXT (no ANSI/color). By default it reads the VISIBLE
   SCREEN of the on-screen pane. `--all` reads the whole buffer including scrollback; `--lines N` reads the
   full buffer and keeps only the last N CONTENT lines (trailing blank rows trimmed; `--all` and `--lines`
-  are mutually exclusive and `--lines` must be > 0 — enforced server-side too). `--pane left` reads the
+  are mutually exclusive and `--lines` must be > 0 — enforced server-side too). An alternate-screen
+  buffer has no scrollback, so neither `--all` nor `--lines` can retrieve older output from it. For
+  completed Claude Code replies, read its transcript file; `cookbook/annotate-claude-replies` shows how
+  to locate it per pane. `--pane left` reads the
   main pane, `--pane right` the split pane (errors if the session has no split), `--pane scratch` the
   session's scratch terminal even while it is hidden (its buffer is kept alive; `session has no scratch
   terminal` when none opened); the role and position aliases (`primary`/`top`, `split`/`bottom`) resolve to
