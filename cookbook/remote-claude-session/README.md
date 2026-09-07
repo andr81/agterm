@@ -18,10 +18,11 @@ Conversations survive more than the connection. The Claude Code session id is pi
 ## Requirements
 
 - agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore` and `session status --pane-id` the recipe rides on are all older than that.
+- **Restore running commands on restart** turned on under Settings ▸ General ▸ Sessions. Without it a restarted agterm brings the tab back as a plain shell and the reconnect above does not happen.
 - `jq`, `ssh`, and Python 3.9 or later on the Mac, which macOS ships as `/usr/bin/python3`. Python runs the status relay; without it the tab still works and the row stays idle.
-- A Linux host you can leave running, with `bash`, `tmux`, Python 3.9 or later, `uuidgen` (util-linux), `git`, and `tic` (ncurses) for the terminfo `install` compiles there.
-- Claude Code itself on that host, which the recipe does not install: Anthropic's installer puts it in `~/.local/bin`, a directory a login shell has on `PATH` and a command handed to tmux does not, which is why the recipe starts the agent through one. `ssh devbox 'bash -lc "command -v claude"'` is the check, and the recipe carries your sign-in over, see *Setup*.
-- The host's sshd allowing remote forwarding, which is the default `AllowTcpForwarding yes`. Without it the tabs work and the sidebar rows stay idle.
+- A host you can leave running, with `bash`, tmux 3.3 or later, Python 3.9 or later, `uuidgen` (util-linux), and `git`. tmux 3.3 is where `allow-passthrough` arrived, and `install` writes it unconditionally, so an older tmux fails to read its own config. `tic` (ncurses) is worth having for the terminfo `install` compiles, but without it a session simply falls back to `xterm-256color`. Only Linux hosts have been used.
+- Claude Code on that host, reachable from the login shell's `PATH`, and signed in. *Setup* has both steps.
+- The host's sshd allowing remote forwarding (`AllowTcpForwarding yes`, the default) for the status bridge, and agent forwarding (`AllowAgentForwarding yes`, also the default) for the Mac's keys to reach `git` and `clone` there. Without the first, tabs work and the sidebar rows stay idle; without the second, `git` on the host needs a key of its own.
 - Key-based ssh to the host that works without a prompt, from a process with no terminal: a key held by the macOS agent, or one without a passphrase. `rsync` on both sides for the optional `sync`.
 
 ## Setup
@@ -36,9 +37,10 @@ cp agt-remote.sh agt-remote-relay.py agt-remote-host.sh ~/bin/
 chmod +x ~/bin/agt-remote.sh ~/bin/agt-remote-relay.py
 ```
 
-Create `~/.config/agt-remote/config`. It is sourced by the script, so it is plain shell:
+Create `~/.config/agt-remote/config`, directory included. It is sourced by the script, so it is plain shell:
 
 ```sh
+mkdir -p ~/.config/agt-remote
 AGT_REMOTE_HOST=devbox                 # an ssh alias, or user@host
 AGT_REMOTE_PROJECTS=projects           # the projects root on the host, relative to its $HOME or absolute
 AGT_REMOTE_LOCAL_PROJECTS=$HOME/projects  # where the same projects live here, for the tab's local shell
@@ -48,9 +50,9 @@ AGT_REMOTE_BADGE='⇅ '                  # the sidebar prefix; set it empty to k
 
 A config file rather than variables on the keymap line, because two of the script's callers never see the keymap's environment: the tab's own process, and the line agterm replays after a restart.
 
-Four more are read and rarely set: `AGT_REMOTE_STATUS=0` turns the status bridge off entirely, `AGT_REMOTE_RETRY` is the reconnect wait in seconds (5), `AGT_REMOTE_BIN` is where the host script lands on the host (`.local/bin/agt-remote-host.sh`), and `AGT_REMOTE_STATE` is this Mac's own bookkeeping directory (`~/.agt-remote`). `AGT_REMOTE_CONFIG` points at this file itself, so it is an environment variable rather than a line in it.
+Three more belong in the same file and are rarely set: `AGT_REMOTE_STATUS=0` turns the status bridge off entirely, `AGT_REMOTE_RETRY` is the reconnect wait in seconds (5), and `AGT_REMOTE_BIN` is where the host script lands on the host (`.local/bin/agt-remote-host.sh`). Two others are read before this file is, so a line here would not reach them and they are set in the environment instead: `AGT_REMOTE_CONFIG`, which points at the file itself, and `AGT_REMOTE_STATE`, this Mac's bookkeeping directory (`~/.agt-remote`).
 
-Give the host an entry in `~/.ssh/config`. The `Control*` lines are what make the picker instant and let every tab share one connection; the `ServerAlive*` pair turns a dead connection into a reconnect within a minute instead of a frozen tab; `ForwardAgent` is what lets `git` on the host use this Mac's keys, so the host never holds one of its own, at a cost *Limits* spells out:
+Give the host an entry in `~/.ssh/config`. Its alias is what `AGT_REMOTE_HOST` names, and `HostName`, `User` and `IdentityFile` below are placeholders for yours. The `Control*` lines are what make the picker instant and let every tab share one connection; the `ServerAlive*` pair turns a dead connection into a reconnect within a minute instead of a frozen tab; `ForwardAgent` is what lets `git` on the host use this Mac's keys, so the host never holds one of its own, at a cost *Limits* spells out:
 
 ```
 Host devbox
@@ -66,7 +68,63 @@ Host devbox
   ServerAliveCountMax 4
 ```
 
-Add the chords to `~/.config/agterm/keymap.conf` and apply with File ▸ Reload Keymap:
+Prove the connection before going further, since every step below rides on it. It has to work with no terminal and no prompt, which is how the tab's own process will call it:
+
+```sh
+ssh -o BatchMode=yes devbox true && echo ok
+```
+
+A prompt, a passphrase or a host-key question here is a failure: fix it in `~/.ssh/config` or with
+`ssh-add --apple-use-keychain ~/.ssh/<key>` first.
+
+### On the host
+
+Everything else on the host is done from the Mac. The commands are safe to run again, except the last, which mirrors and can delete; see its own note.
+
+**1. Install.**
+
+```sh
+~/bin/agt-remote.sh install
+```
+
+Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), and runs the host script's `setup`, which: creates the projects root; appends to `~/.tmux.conf` the lines that let the agent's clipboard and notification escapes through; makes `~/.profile` source `~/.agt-remote/env`; copies this Mac's `known_hosts` entries for github.com and gitlab.com to the host, so the host trusts exactly the forge keys the Mac has already verified and nothing is scanned blind (no entry here means none there, and the first clone then fails with a host-key error: run `ssh -T git@github.com`, or `git@gitlab.com`, on the Mac once and reinstall); and merges the four status hooks into `~/.claude/settings.json`. The merge keeps every hook already there, refuses to touch a file that is not valid JSON, keeps the file's mode, writes through a symlink rather than replacing it, and takes a timestamped backup only when it actually changes something. Those four events match what agterm's own **Install Agent Status Hooks…** wires up locally; `agt-remote-host.sh hooks` prints the block if you would rather merge it by hand.
+
+`install` reports rather than fails: it ends with `host ready` either way, so the run is clean only when nothing precedes that line. A warning about `tmux`, `python3`, `uuidgen` or `claude` is the one you get, and nothing later repeats it. A missing agent in particular surfaces as a tab that opens on a bare shell with nothing running in it.
+
+**2. Put the agent there.** Install Claude Code on the host the way you would on any machine; the recipe never does it for you. What it does need is that a login shell finds it, because that is the shell tmux opens and the one the agent is started from — an installer that lands in `~/.local/bin` qualifies, a binary reachable only from your interactive rc file does not:
+
+```sh
+ssh devbox 'exec $SHELL -lc "command -v claude"'
+```
+
+**3. Sign in.** Claude Code on the host needs your subscription. On the Mac, `claude setup-token` opens the browser and prints a long-lived token; hand it over:
+
+```sh
+~/bin/agt-remote.sh auth
+```
+
+It asks for the token without echoing it and stores it on the host in `~/.agt-remote/env` as `CLAUDE_CODE_OAUTH_TOKEN`, mode 600. The agent is started through a `sh -c` wrapper that sources that file first, so the token reaches it whatever the login shell and whichever startup files it reads, and never appears on a command line; `~/.profile` sources the file as well, for a shell you open on the host by hand. Run it again to replace the token. Signing in on the host interactively instead, with `claude` and `/login`, works the same way and needs no token.
+
+**4. Clone.** Every direct subdirectory of the projects root is one picker row, and until there is at least one the open chord has nothing to show and says so:
+
+```sh
+~/bin/agt-remote.sh clone git@github.com:you/api.git
+~/bin/agt-remote.sh clone git@gitlab.com:group/backend.git api-backend
+```
+
+The clone runs on the host with your Mac's ssh agent forwarded, so any key the agent holds works there; `ssh-add -l` shows what it holds, and `ssh-add --apple-use-keychain ~/.ssh/<key>` loads one. The second argument names the directory when the repository's own name is not the project's.
+
+**5. Sync, optionally.** This one mirrors rather than merges: `rsync --delete` means a skill, agent or command that exists only on the host is removed to match the Mac.
+
+```sh
+~/bin/agt-remote.sh sync
+```
+
+Copies `~/.claude/CLAUDE.md`, `skills/`, `agents/` and `commands/`, whichever exist, to the host's `~/.claude/`, so the agent there follows the same instructions. Nothing else from `~/.claude` travels: `settings.json` carries this Mac's hooks and paths, and plugins are installed per machine.
+
+### The chords
+
+Last, because pressing one before the host is ready reports a failure rather than opening anything. Add them to `~/.config/agterm/keymap.conf` and apply with File ▸ Reload Keymap:
 
 ```
 command "Remote session" ctrl+shift+n>r ~/bin/agt-remote.sh open
@@ -77,44 +135,7 @@ command "Remote end"     ctrl+shift+n>x ~/bin/agt-remote.sh end "{AGT_SESSION_ID
 
 Any chord with a modifier works; a leader pair is shown because the two commands read as one family. A custom command cannot shadow a built-in, so a chord that collides is quietly demoted to palette-only and appears to do nothing; `agtermctl keymap list` shows what each one currently resolves to, and the entry stays reachable by name from the action palette, which separates a bad chord from a broken script. If `agtermctl` is not on your `PATH`, set `AGTERMCTL` to its full path in the config file.
 
-### On the host
-
-Everything on the host is done from the Mac, in four commands. Each is safe to run again.
-
-**1. Install.**
-
-```sh
-~/bin/agt-remote.sh install
-```
-
-Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's terminfo entry there (tmux refuses to start under a `TERM` the host cannot name, and `xterm-ghostty` is one it does not know), and runs the host script's `setup`, which: creates the projects root; appends to `~/.tmux.conf` the lines that let the agent's clipboard and notification escapes through; makes `~/.profile` source `~/.agt-remote/env`; copies this Mac's `known_hosts` entries for github.com and gitlab.com to the host, so the host trusts exactly the forge keys the Mac has already verified and nothing is scanned blind (no entry here means none there, and the first clone then fails with a host-key error: run `ssh -T git@github.com` on the Mac once and reinstall); and merges the four status hooks into `~/.claude/settings.json`. The merge keeps every hook already there, refuses to touch a file that is not valid JSON, keeps the file's mode, writes through a symlink rather than replacing it, and takes a timestamped backup only when it actually changes something. Those four events match what agterm's own **Install Agent Status Hooks…** wires up locally; `agt-remote-host.sh hooks` prints the block if you would rather merge it by hand.
-
-`install` reports rather than fails: a line about `tmux`, `python3`, `uuidgen` or `claude` not being there is the one warning you get, and nothing later repeats it. A missing agent in particular surfaces as a tab that opens on a bare shell with nothing running in it.
-
-**2. Sign in.** Claude Code on the host needs your subscription. On the Mac, `claude setup-token` opens the browser and prints a long-lived token; hand it over:
-
-```sh
-~/bin/agt-remote.sh auth
-```
-
-It asks for the token without echoing it and stores it on the host in `~/.agt-remote/env` as `CLAUDE_CODE_OAUTH_TOKEN`, mode 600. The agent is started through a `sh -c` wrapper that sources that file first, so the token reaches it whatever the login shell and whichever startup files it reads, and never appears on a command line; `~/.profile` sources the file as well, for a shell you open on the host by hand. Run it again to replace the token. Signing in on the host interactively instead, with `claude` and `/login`, works the same way and needs no token.
-
-**3. Clone.** Every direct subdirectory of the projects root is one picker row, and until there is at least one the open chord has nothing to show and says so:
-
-```sh
-~/bin/agt-remote.sh clone git@github.com:you/api.git
-~/bin/agt-remote.sh clone git@gitlab.com:group/backend.git api-backend
-```
-
-The clone runs on the host with your Mac's ssh agent forwarded, so any key the agent holds works there; `ssh-add -l` shows what it holds, and `ssh-add --apple-use-keychain ~/.ssh/<key>` loads one. The second argument names the directory when the repository's own name is not the project's.
-
-**4. Sync, optionally.**
-
-```sh
-~/bin/agt-remote.sh sync
-```
-
-Copies `~/.claude/CLAUDE.md`, `skills/`, `agents/` and `commands/`, whichever exist, to the host's `~/.claude/`, so the agent there follows the same instructions. Nothing else from `~/.claude` travels: `settings.json` carries this Mac's hooks and paths, and plugins are installed per machine.
+`agtermctl keymap list` shows what every chord resolves to after the reload, which is the quickest way to tell a demoted entry or a wrong path from a script that ran and failed. Then press the open chord: the picker lists the projects you cloned.
 
 ## Usage
 
