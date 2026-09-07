@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.27.1 - 2026-09-07
+
+### Bug Fixes
+
+- answering a terminal-style `ask` and then closing its session over the control socket left the reselected session without keyboard focus until the user clicked. A stale active update let the closing session's terminal view reclaim focus after its surface had been destroyed. The terminal deck now rejects focus requests for retired surfaces, so keyboard input stays with the reselected session #562 @umputun
+
 ## v0.27.0 - 2026-09-07
 
 ### New Features
