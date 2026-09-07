@@ -8,7 +8,8 @@
 #   end [SESSION-ID]      chord: kill the tab's remote tmux session, close the tab
 #   list                  print the host's sessions and projects
 #   install               copy agt-remote-host.sh to the host and prepare it
-#   auth [TOKEN]          store the agent's OAuth token on the host
+#   auth                  store the agent's OAuth token on the host, read from a
+#                         hidden prompt or stdin
 #   clone URL [NAME]      clone a repository under the host's projects root
 #   sync                  copy ~/.claude instructions, skills, agents, commands over
 #
@@ -381,17 +382,23 @@ install() {
 }
 
 # the token is read here and travels on stdin, so it never sits in a process
-# list or a shell history on either side
+# list or a shell history on either side. There is deliberately no argument
+# form: taking one is what would put a long-lived credential in both.
 auth() {
 	require_host
-	token=${1:-}
-	if [ -z "$token" ]; then
-		[ -t 0 ] || fail "auth needs a token as its argument or a terminal to ask on"
+	token=""
+	if [ -t 0 ]; then
 		printf 'paste the token from "claude setup-token": '
+		# a Ctrl-C on the prompt must not leave the terminal with echo off
+		tty_state=$(stty -g 2>/dev/null)
+		trap 'stty "$tty_state" 2>/dev/null; exit 130' INT TERM
 		stty -echo 2>/dev/null
 		IFS= read -r token
-		stty echo 2>/dev/null
+		stty "$tty_state" 2>/dev/null
+		trap - INT TERM
 		printf '\n'
+	else
+		IFS= read -r token
 	fi
 	[ -n "$token" ] || fail "no token given"
 	printf '%s' "$token" | grep -Eqx '[A-Za-z0-9_-]+' || fail "that does not look like a token"
@@ -427,7 +434,7 @@ attach) attach "${2:?name}" "${3:?project}" ;;
 end) end "${2:-}" ;;
 list) require_host && remote list ;;
 install) install ;;
-auth) auth "${2:-}" ;;
+auth) auth ;;
 clone) clone "${2:?url}" "${3:-}" ;;
 sync) sync_claude ;;
 *)
