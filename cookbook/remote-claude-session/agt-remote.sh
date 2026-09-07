@@ -434,7 +434,8 @@ attach) attach "${2:?name}" "${3:?project}" ;;
 end) end "${2:-}" ;;
 list) require_host && remote list ;;
 install) install ;;
-auth) auth ;;
+auth) [ $# -eq 1 ] || fail "auth takes no arguments; it reads the token from a prompt or stdin"
+	auth ;;
 clone) clone "${2:?url}" "${3:-}" ;;
 sync) sync_claude ;;
 *)
