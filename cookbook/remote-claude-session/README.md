@@ -75,7 +75,7 @@ command "Remote end"     ctrl+shift+n>x ~/bin/agt-remote.sh end "{AGT_SESSION_ID
 
 `{AGT_SESSION_ID}` is replaced by the session the chord fired in, and is how `end` knows which tab it is about. A custom command inherits the app's launch environment rather than a terminal's, so the script cannot read that from `$AGTERM_SESSION_ID` and the token is not optional.
 
-Any chord with a modifier works; a leader pair is shown because the two commands read as one family. If `agtermctl` is not on your `PATH`, set `AGTERMCTL` to its full path in the config file.
+Any chord with a modifier works; a leader pair is shown because the two commands read as one family. A custom command cannot shadow a built-in, so a chord that collides is quietly demoted to palette-only and appears to do nothing; `agtermctl keymap list` shows what each one currently resolves to, and the entry stays reachable by name from the action palette, which separates a bad chord from a broken script. If `agtermctl` is not on your `PATH`, set `AGTERMCTL` to its full path in the config file.
 
 ### On the host
 
@@ -99,7 +99,7 @@ Copies `agt-remote-host.sh` to `~/.local/bin/` on the host, compiles the Mac's t
 
 It asks for the token without echoing it and stores it on the host in `~/.agt-remote/env` as `CLAUDE_CODE_OAUTH_TOKEN`, mode 600. The agent is started through a `sh -c` wrapper that sources that file first, so the token reaches it whatever the login shell and whichever startup files it reads, and never appears on a command line; `~/.profile` sources the file as well, for a shell you open on the host by hand. Run it again to replace the token. Signing in on the host interactively instead, with `claude` and `/login`, works the same way and needs no token.
 
-**3. Clone.** Every direct subdirectory of the projects root is one picker row:
+**3. Clone.** Every direct subdirectory of the projects root is one picker row, and until there is at least one the open chord has nothing to show and says so:
 
 ```sh
 ~/bin/agt-remote.sh clone git@github.com:you/api.git

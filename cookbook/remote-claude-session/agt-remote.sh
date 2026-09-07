@@ -129,6 +129,11 @@ open() {
 				{id: ("p:" + .[1]), label: .[1], subtitle: ("new session in " + .[2])}
 			end)') || fail "cannot parse the listing from $HOST"
 
+	# an empty picker is refused by pick.open, so the first open on a host with no
+	# project yet would report the refusal rather than the reason for it
+	[ "$(printf '%s' "$items" | jq 'length')" -gt 0 ] ||
+		fail "no sessions or projects on $HOST yet: clone one with '$(basename "$SELF") clone URL'"
+
 	choice=$(printf '%s' "$items" | agt pick --prompt "remote session or project" --window "${window:-active}")
 	rc=$?
 	case $rc in
