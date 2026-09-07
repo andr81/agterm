@@ -193,7 +193,9 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 
 **`install` edits files on the host.** `~/.tmux.conf`, `~/.profile`, `~/.ssh/known_hosts` and `~/.claude/settings.json` each gain a marked block or entry, once. A `settings.json` that is not valid JSON is reported and left alone, and the hooks are then missing until you fix it and rerun.
 
-**A failed reconnect pin is reported, not fixed.** If `session restore` cannot save the tab's reconnect line, the tab still opens and works, and a banner carries the exact `attach` command to run by hand after the next agterm restart. `sync` runs `rsync --delete` on the four items it copies, so a skill that exists only on the host is removed by the next sync.
+**A failed reconnect pin is reported, not fixed.** If `session restore` cannot save the tab's reconnect line, the tab still opens and works, and a banner carries the exact `attach` command to run by hand after the next agterm restart.
+
+**`sync` mirrors and therefore deletes.** It runs `rsync --delete` on the four items it copies, so a skill, agent or command that exists only on the host is removed to match the Mac. It is the one step that is not safe to repeat blindly.
 
 **A host that forbids remote forwarding gets no statuses.** The tab still opens, after three refused probes and a line saying the forward was refused, and the row stays idle for that attachment. Every attach costs one extra short connection for the probe; with `ControlMaster` in place for the real connection that is well under a second. Ask the host's admin about `AllowTcpForwarding` and `PermitListen` if you want the bridge there.
 
