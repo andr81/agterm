@@ -48,7 +48,11 @@ attach() {
 	infocmp "${TERM:-}" >/dev/null 2>&1 || export TERM=xterm-256color
 
 	if ! tmux has-session -t "=$name" 2>/dev/null; then
-		tmux new-session -d -s "$name" -c "$dir" || exit 1
+		# the pane's own id: send-keys takes a target-pane, where the exact-match
+		# prefix that addresses a session resolves to nothing, and the command that
+		# starts the agent would be dropped with the session left at a bare prompt
+		local pane
+		pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$name" -c "$dir") || exit 1
 		# the agent's conversation id is pinned to the session name, so a host
 		# reboot brings back the same conversation rather than a new one
 		local idfile=$STATE/$name.claude id
@@ -64,8 +68,9 @@ attach() {
 		# never appears on a command line and does not depend on which startup
 		# file the login shell reads; `sh` keeps this the same under any shell.
 		# The file is optional: a host signed in interactively has none.
-		tmux send-keys -t "=$name" \
-			"sh -c '[ -f \"$STATE/env\" ] && . \"$STATE/env\"; exec $cmd $flag $id'" Enter
+		tmux send-keys -t "$pane" \
+			"sh -c '[ -f \"$STATE/env\" ] && . \"$STATE/env\"; exec $cmd $flag $id'" Enter ||
+			{ tmux kill-session -t "=$name" 2>/dev/null; exit 1; }
 	fi
 	# -d: the last client wins, so a tab forgotten elsewhere cannot shrink this one
 	exec tmux attach-session -d -t "=$name"
