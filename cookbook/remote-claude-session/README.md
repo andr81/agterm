@@ -46,7 +46,7 @@ AGT_REMOTE_BADGE='⇅ '                  # the sidebar prefix; set it empty to k
 
 A config file rather than variables on the keymap line, because two of the script's callers never see the keymap's environment: the tab's own process, and the line agterm replays after a restart.
 
-Give the host an entry in `~/.ssh/config`. The `Control*` lines are what make the picker instant and let every tab share one connection; the `ServerAlive*` pair turns a dead connection into a reconnect within a minute instead of a frozen tab; `ForwardAgent` is what lets `git` on the host use this Mac's keys, so the host never holds one of its own:
+Give the host an entry in `~/.ssh/config`. The `Control*` lines are what make the picker instant and let every tab share one connection; the `ServerAlive*` pair turns a dead connection into a reconnect within a minute instead of a frozen tab; `ForwardAgent` is what lets `git` on the host use this Mac's keys, so the host never holds one of its own, at a cost *Limits* spells out:
 
 ```
 Host devbox
@@ -163,5 +163,7 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 **A failed reconnect pin is reported, not fixed.** If `session restore` cannot save the tab's reconnect line, the tab still opens and works, and a banner carries the exact `attach` command to run by hand after the next agterm restart. `sync` runs `rsync --delete` on the four items it copies, so a skill that exists only on the host is removed by the next sync.
 
 **A host that forbids remote forwarding gets no statuses.** The tab still opens, after three refused probes and a line saying the forward was refused, and the row stays idle for that attachment. Every attach costs one extra short connection for the probe; with `ControlMaster` in place for the real connection that is well under a second. Ask the host's admin about `AllowTcpForwarding` and `PermitListen` if you want the bridge there.
+
+**The forwarded agent is usable from the host while a tab is attached.** `ForwardAgent yes` and the fixed `~/.ssh/agent.sock` mean anything running as your user on the host, root included, can ask your Mac's agent to sign with every key it holds, for as long as one tab is attached. It cannot read a key out, and the socket dies with the connection, but inside that window it reaches whatever those keys reach. `ssh-add -l` shows what is exposed; load only the keys the host's clones need. On a host anyone else can reach, leave `ForwardAgent` out of the `~/.ssh/config` entry and give the host its own deploy key; `clone` is the one command that then stops working.
 
 **The token in `~/.agt-remote/env` is your subscription.** It is a file on the host, readable by your user there; treat host access as account access, and rotate it with `auth` if the host is ever shared or lost.
