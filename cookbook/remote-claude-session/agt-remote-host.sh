@@ -19,6 +19,7 @@ STATE=${AGT_REMOTE_STATE:-$HOME/.agt-remote}
 PROJECTS=${AGT_REMOTE_PROJECTS:-$HOME/projects}
 PROJECTS=${PROJECTS/#\~/$HOME}
 [[ $PROJECTS == /* ]] || PROJECTS=$HOME/$PROJECTS
+PROJECTS=${PROJECTS%/}
 SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 
 valid_name() { [[ $1 =~ ^[A-Za-z0-9_-]{1,64}$ ]]; }
@@ -124,7 +125,13 @@ status() {
 # ---------------------------------------------------------------- list, kill
 
 list() {
-	tmux list-sessions -F $'S\t#{session_name}\t#{session_attached}\t#{b:session_path}' 2>/dev/null |
+	# only sessions sitting directly in a project directory: the host's own tmux
+	# sessions are not this recipe's, and picking one would end in a failed attach
+	local name attached path
+	while IFS=$'\t' read -r name attached path; do
+		[[ $path == "$PROJECTS"/* && ${path#"$PROJECTS"/} != */* ]] || continue
+		printf 'S\t%s\t%s\t%s\n' "$name" "$attached" "${path##*/}"
+	done < <(tmux list-sessions -F $'#{session_name}\t#{session_attached}\t#{session_path}' 2>/dev/null) |
 		sort -t $'\t' -k2
 	local d
 	for d in "$PROJECTS"/*/; do
@@ -143,6 +150,13 @@ kill_session() {
 
 # ---------------------------------------------------------------- setup
 
+# an append to a file whose last line has no newline glues onto it, and the
+# known_hosts entry glued that way never matches on a rerun and is added again
+end_newline() {
+	[[ -s $1 && -n $(tail -c1 "$1") ]] && printf '\n' >>"$1"
+	return 0
+}
+
 # every step checks for its own marker first, so a rerun changes nothing
 setup() {
 	mkdir -p "$STATE" "$PROJECTS" "$HOME/.ssh" "$HOME/.claude"
@@ -152,37 +166,48 @@ setup() {
 	# pass through tmux to reach the terminal on the other side of ssh. Nothing
 	# here touches SSH_AUTH_SOCK: each session gets its own link, see attach.
 	local conf=$HOME/.tmux.conf
-	grep -qs 'agt-remote' "$conf" || cat >>"$conf" <<-'EOF'
-		# agt-remote: let the agent's clipboard and notification escapes through
-		set -g set-clipboard on
-		set -g allow-passthrough on
-		set -g history-limit 50000
-	EOF
+	if ! grep -qs 'agt-remote' "$conf"; then
+		end_newline "$conf"
+		cat >>"$conf" <<-'EOF'
+			# agt-remote: let the agent's clipboard and notification escapes through
+			set -g set-clipboard on
+			set -g allow-passthrough on
+			set -g history-limit 50000
+		EOF
+	fi
 
 	# the token `auth` stores, and anything else the sessions should carry
 	local profile=$HOME/.profile
-	grep -qs 'agt-remote' "$profile" || cat >>"$profile" <<-'EOF'
-		# agt-remote: the agent's credentials and session environment
-		[ -f "$HOME/.agt-remote/env" ] && . "$HOME/.agt-remote/env"
-	EOF
+	if ! grep -qs 'agt-remote' "$profile"; then
+		end_newline "$profile"
+		cat >>"$profile" <<-'EOF'
+			# agt-remote: the agent's credentials and session environment
+			[ -f "$HOME/.agt-remote/env" ] && . "$HOME/.agt-remote/env"
+		EOF
+	fi
 
 	# clones must not stop at a host-key prompt nobody can answer: the entries
 	# arrive on stdin from the Mac's own known_hosts, already verified there
 	local kh=$HOME/.ssh/known_hosts line
 	touch "$kh"
 	chmod 600 "$kh"
+	end_newline "$kh"
 	while IFS= read -r line; do
 		[[ -n $line && $line != \#* ]] || continue
 		grep -qxF -- "$line" "$kh" || printf '%s\n' "$line" >>"$kh"
 	done
 
-	merge_hooks || echo "hooks NOT merged; fix ~/.claude/settings.json and rerun install" >&2
+	local hooks="hooks merged into ~/.claude/settings.json"
+	merge_hooks || {
+		hooks="hooks NOT merged"
+		echo "hooks NOT merged; fix ~/.claude/settings.json and rerun install" >&2
+	}
 	command -v tmux >/dev/null || echo "tmux is not installed" >&2
 	command -v python3 >/dev/null || echo "python3 is not installed (the status bridge needs it)" >&2
 	command -v uuidgen >/dev/null || echo "uuidgen is not installed" >&2
 	# a login shell, the kind tmux opens; ssh's own shell for `setup` is not one
 	bash -lc 'command -v claude' >/dev/null 2>&1 || echo "claude is not on PATH for login shells" >&2
-	echo "host ready: projects in $PROJECTS, state in $STATE, hooks merged into ~/.claude/settings.json"
+	echo "host ready: projects in $PROJECTS, state in $STATE, $hooks"
 }
 
 # adds the four status hooks to ~/.claude/settings.json, keeping everything
@@ -256,6 +281,9 @@ hooks() {
 # ---------------------------------------------------------------- auth, clone
 
 auth() {
+	# the token file is created before it can be chmod'd, and a channel that drops
+	# between the write and the rename leaves the temporary behind
+	umask 077
 	local token
 	IFS= read -r token
 	[[ $token =~ ^[A-Za-z0-9_-]+$ ]] || { echo "no usable token on stdin" >&2; exit 2; }
@@ -263,6 +291,7 @@ auth() {
 	local env=$STATE/env
 	touch "$env"
 	chmod 600 "$env"
+	rm -f "$env.tmp"
 	grep -v '^export CLAUDE_CODE_OAUTH_TOKEN=' "$env" >"$env.tmp" || true
 	printf "export CLAUDE_CODE_OAUTH_TOKEN='%s'\n" "$token" >>"$env.tmp"
 	chmod 600 "$env.tmp"

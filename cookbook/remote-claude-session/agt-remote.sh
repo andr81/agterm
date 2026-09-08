@@ -120,8 +120,13 @@ open() {
 	# one round trip lists sessions and projects; the host script prints TSV
 	listing=$(remote list 2>&1) || fail "cannot list $HOST: $listing"
 
+	# stderr rides along so a failure has something to report, and an ordinary host
+	# writes plenty of it: a locale warning, a Banner, an echo in a startup file.
+	# Only a well-formed row becomes an item; the rest would carry a null label.
 	items=$(printf '%s\n' "$listing" | jq -R -s --arg badge "$BADGE" '
-		split("\n") | map(select(length > 0) | split("\t")) | map(
+		split("\n") | map(select(length > 0) | split("\t"))
+		| map(select((.[0] == "S" and length == 4) or (.[0] == "P" and length == 3)))
+		| map(
 			if .[0] == "S" then
 				{id: ("s:" + .[1]), label: ($badge + .[1]),
 				 subtitle: ((if .[2] == "0" then "detached" else "attached" end) + " · " + .[3])}
@@ -189,8 +194,16 @@ open() {
 
 	# the tab reattaches on its own after an agterm restart: a pinned line rather
 	# than the captured foreground, which would replay a bare ssh with no loop.
-	agt session restore "$run" --target "$sid" >/dev/null 2>&1 ||
+	if ! agt session restore "$run" --target "$sid" >/dev/null 2>&1; then
 		notify "$name opened, but its reconnect line could not be pinned: after an agterm restart run: $run"
+	else
+		# the pin replays under Re-run commands or Live sessions only, and Fresh
+		# shells is the default, so a setting loses the reattach more often than a
+		# failure does. Best-effort: `restore mode` is newer than 0.22.0.
+		case $(agt restore mode --json 2>/dev/null | jq -r '.result.restore.configured // empty' 2>/dev/null) in
+		none) notify "$name opened, but Settings ▸ General ▸ Sessions is on Fresh shells: after an agterm restart the tab comes back as a plain shell" ;;
+		esac
+	fi
 
 	mkdir -p "$STATE_DIR/index"
 	printf '%s\t%s\n' "$name" "$project" >"$STATE_DIR/$(canonical_id "$sid")"
@@ -299,6 +312,10 @@ attach() {
 			ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$HOST" "$line"
 		fi
 		rc=$?
+		# a forward asked for by a multiplexed client outlives that client: nothing
+		# else cancels it, so every reopen would leave a listener on the host until
+		# the shared master goes. Quiet when there is no master to ask.
+		[ -n "$port" ] && ssh -O cancel -R "127.0.0.1:$port:$relay_sock" "$HOST" >/dev/null 2>&1
 		case $rc in
 		0) break ;;
 		255)
