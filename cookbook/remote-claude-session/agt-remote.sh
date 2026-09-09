@@ -57,8 +57,37 @@ notify() {
 	agt notify "$1" --title "Remote" >/dev/null 2>&1 || printf '%s\n' "$1" >&2
 }
 
+# an error has to land where the key was pressed. A desktop banner is easy to
+# miss, and missing it makes a failed chord look like a chord that did nothing,
+# so a failure goes to the session as a HUD panel: passive, so the terminal
+# underneath keeps taking keystrokes, and closed by a child that outlives this
+# script. A tty means someone typed the command and can read stderr; an
+# emptied window has no session to post to, and falls back to the banner.
+report() {
+	msg=$1
+	detail=${2:-}
+	if [ -t 2 ]; then
+		printf '%s\n' "$msg${detail:+: $detail}" >&2
+		return
+	fi
+	target=${AGT_SESSION_ID:-${AGTERM_SESSION_ID:-active}}
+	# a shell has no arrays, and an unquoted ${detail:+--detail "$detail"} would
+	# split a detail that holds spaces into several arguments
+	if [ -n "$detail" ]; then
+		set -- --detail "$detail"
+	else
+		set --
+	fi
+	if agt session hud open "$msg" "$@" --position top-center \
+		--text-color '#ff6b6b' --target "$target" >/dev/null 2>&1; then
+		(sleep 8; agt session hud close --target "$target" >/dev/null 2>&1) &
+		return
+	fi
+	notify "$msg${detail:+: $detail}"
+}
+
 fail() {
-	notify "$1"
+	report "$1" "${2:-}"
 	exit 1
 }
 
@@ -118,7 +147,15 @@ open() {
 	command -v jq >/dev/null 2>&1 || fail "jq is not on PATH"
 
 	# one round trip lists sessions and projects; the host script prints TSV
-	listing=$(remote list 2>&1) || fail "cannot list $HOST: $listing"
+	listing=$(remote list 2>&1)
+	rc=$?
+	# 255 is ssh's own failure, the host being down or unreachable among them, and
+	# the last line carries which. Anything else came from the host script.
+	if [ "$rc" -eq 255 ]; then
+		fail "$HOST is unreachable" "$(printf '%s\n' "$listing" | tail -1)"
+	elif [ "$rc" -ne 0 ]; then
+		fail "cannot list $HOST" "$(printf '%s\n' "$listing" | tail -1)"
+	fi
 
 	# stderr rides along so a failure has something to report, and an ordinary host
 	# writes plenty of it: a locale warning, a Banner, an echo in a startup file.
@@ -374,7 +411,7 @@ end() {
 	[ "$rc" -eq 0 ] || exit 0
 	[ "$(printf '%s' "$answer" | jq -r '.id')" = "kill" ] || exit 0
 
-	out=$(remote kill "$name" 2>&1) || fail "could not kill $name on $HOST: $out"
+	out=$(remote kill "$name" 2>&1) || fail "could not kill $name on $HOST" "$(printf '%s\n' "$out" | tail -1)"
 	rm -f "$STATE_DIR/$sid" "$STATE_DIR/index/$name"
 	agt session close --target "$sid" >/dev/null 2>&1 || notify "$name killed on $HOST; close the tab by hand"
 }

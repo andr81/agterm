@@ -17,7 +17,7 @@ Conversations survive more than the connection. The Claude Code session id is pi
 
 ## Requirements
 
-- agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore` and `session status --pane-id` the recipe rides on are all older than that.
+- agterm 0.22.0 or later, which fixed a custom command spawning with a `PATH` that could not resolve a bare `agtermctl`. The picker, `session new --command`, `session restore`, `session hud` and `session status --pane-id` the recipe rides on are all older than that.
 - **Restore sessions** set to **Re-run commands**, or to **Live sessions**, under Settings ▸ General ▸ Sessions. The default is **Fresh shells**, and under it a restarted agterm brings the tab back as a plain shell, so the reconnect above does not happen.
 - `jq`, `ssh`, and Python 3.9 or later on the Mac, which macOS ships as `/usr/bin/python3`. Python runs the status relay; without it the tab still works and the row stays idle.
 - A host you can leave running, with `bash`, tmux 3.3 or later, Python 3.9 or later, `uuidgen` (util-linux), and `git`. tmux 3.3 is where `allow-passthrough` arrived, and `install` writes it unconditionally, so an older tmux fails to read its own config. `tic` (ncurses) is worth having for the terminfo `install` compiles, but without it a session simply falls back to `xterm-256color`. Only Linux hosts have been used.
@@ -155,7 +155,7 @@ From any shell, `~/bin/agt-remote.sh list` prints the host's sessions and projec
 
 ## How it works
 
-The local script has three callers with three environments, and the design mostly follows from keeping them straight. The chord runs it detached, with `$AGT_SOCKET` and `$AGT_WINDOW_ID` and no terminal, so everything it has to say goes through `agtermctl notify`. The tab's process runs it with a terminal and the session's own `$AGTERM_*` variables. The restore line runs it typed into a fresh login shell after a restart. The config file is the one thing all three share.
+The local script has three callers with three environments, and the design mostly follows from keeping them straight. The chord runs it detached, with `$AGT_SOCKET` and `$AGT_WINDOW_ID` and no terminal, so a failure has nowhere to print: it goes to the session it was fired from as a `session hud` panel, which is passive, so the terminal underneath keeps taking keystrokes, and a child of the script takes the panel down eight seconds later. A window with no session left falls back to `agtermctl notify`, and a run from a shell, where stderr is a terminal, just prints. The tab's process runs it with a terminal and the session's own `$AGTERM_*` variables. The restore line runs it typed into a fresh login shell after a restart. The config file is the one thing all three share.
 
 `open` makes one ssh round trip, `agt-remote-host.sh list`, which prints running sessions and projects as TSV, and turns that into the picker's items with the session rows first. Only tmux sessions whose working directory is a project directory are listed, so the host's own sessions stay out, and only well-formed rows become items, so a login banner or a locale warning on the host's stderr cannot reach the picker. A picked session already carries its project, from tmux's own record of the directory it started in. A picked project opens a second `pick` with `--allow-custom` and no items, which is the palette's plain text prompt; the name is limited to letters, digits, `-` and `_`, since it becomes a tmux session name, a file name and an argv word on the remote command line.
 
@@ -185,7 +185,7 @@ The `end` chord reads the tmux name from a marker the open wrote under `~/.agt-r
 
 **Two agents cannot share a name.** The conversation id is pinned to the tmux session's name, so `new-session` twice for the same name, with the first one gone but its transcript present, resumes that transcript rather than starting clean. Pick a fresh name for fresh work, or delete `~/.agt-remote/NAME.claude` on the host.
 
-**The picker reads the host live.** With the host down or unreachable, the open chord raises a banner and opens nothing; there is no cached list. With `ControlMaster` configured the round trip is milliseconds, without it every open pays a full ssh handshake.
+**The picker reads the host live.** With the host down or unreachable, the open chord names the host in a panel over the session and opens nothing; there is no cached list. A dropped network is the common case, and it outlives the outage by up to a minute: every command rides the shared `ControlMaster`, whose connection has to fail `ServerAliveInterval` times `ServerAliveCountMax` before ssh replaces it. With `ControlMaster` configured the round trip is milliseconds, without it every open pays a full ssh handshake.
 
 **Chords inside a scratch terminal or overlay can resolve to the wrong session.** `end` takes the session the chord fired in; from a scratch pane that may be a different tab than the one on screen. The picker names the session it is about to kill, so read the row.
 
